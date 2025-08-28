@@ -201,6 +201,176 @@ def parse_size(size_str: str) -> int:
     elif size_str.endswith('GB'):
         return int(size_str[:-2]) * 1024 * 1024 * 1024
     else:
+        return int(size_str)  # 默认为字节
+
+
+class CrashRecoveryHandler(logging.Handler):
+    """崩溃恢复处理器"""
+    
+    def __init__(self, recovery_callback=None):
+        super().__init__()
+        self.recovery_callback = recovery_callback
+        self.critical_count = 0
+        self.error_threshold = 10  # 连续错误阈值
+        self.recent_errors = []
+        self.max_recent_errors = 50
+        
+    def emit(self, record: logging.LogRecord):
+        try:
+            # 记录错误
+            if record.levelno >= logging.ERROR:
+                self.recent_errors.append({
+                    'timestamp': time.time(),
+                    'level': record.levelname,
+                    'message': record.getMessage(),
+                    'module': record.module
+                })
+                
+                # 限制最近错误数量
+                if len(self.recent_errors) > self.max_recent_errors:
+                    self.recent_errors = self.recent_errors[-self.max_recent_errors:]
+            
+            # 检查严重错误
+            if record.levelno >= logging.CRITICAL:
+                self.critical_count += 1
+                if self.recovery_callback:
+                    self.recovery_callback(record)
+            
+            # 检查错误率
+            if self._check_error_rate():
+                self._trigger_recovery()
+                
+        except Exception:
+            # 避免日志处理器本身出错
+            pass
+    
+    def _check_error_rate(self) -> bool:
+        """检查错误率是否过高"""
+        now = time.time()
+        recent_window = 60  # 1分钟窗口
+        
+        recent_errors = [
+            err for err in self.recent_errors 
+            if now - err['timestamp'] < recent_window and err['level'] == 'ERROR'
+        ]
+        
+        return len(recent_errors) > self.error_threshold
+    
+    def _trigger_recovery(self):
+        """触发恢复机制"""
+        if self.recovery_callback:
+            try:
+                self.recovery_callback({
+                    'type': 'high_error_rate',
+                    'recent_errors': self.recent_errors[-10:],
+                    'timestamp': time.time()
+                })
+            except Exception:
+                pass
+    
+    def get_error_summary(self) -> Dict[str, Any]:
+        """获取错误摘要"""
+        now = time.time()
+        
+        # 按时间窗口统计
+        windows = [60, 300, 3600]  # 1分钟、5分钟、1小时
+        summary = {
+            'total_errors': len(self.recent_errors),
+            'critical_count': self.critical_count,
+            'windows': {}
+        }
+        
+        for window in windows:
+            window_errors = [
+                err for err in self.recent_errors 
+                if now - err['timestamp'] < window
+            ]
+            
+            summary['windows'][f'{window}s'] = {
+                'count': len(window_errors),
+                'rate': len(window_errors) / (window / 60),  # 每分钟
+                'levels': {}
+            }
+            
+            # 按级别统计
+            for err in window_errors:
+                level = err['level']
+                if level not in summary['windows'][f'{window}s']['levels']:
+                    summary['windows'][f'{window}s']['levels'][level] = 0
+                summary['windows'][f'{window}s']['levels'][level] += 1
+        
+        return summary
+
+
+class PerformanceMetricsHandler(logging.Handler):
+    """性能指标处理器"""
+    
+    def __init__(self):
+        super().__init__()
+        self.metrics = {
+            'log_count_by_level': {},
+            'response_times': [],
+            'memory_usage': [],
+            'start_time': time.time()
+        }
+        self._lock = threading.Lock()
+    
+    def emit(self, record: logging.LogRecord):
+        with self._lock:
+            # 统计日志级别
+            level = record.levelname
+            self.metrics['log_count_by_level'][level] = \
+                self.metrics['log_count_by_level'].get(level, 0) + 1
+            
+            # 记录响应时间（如果消息包含时间信息）
+            message = record.getMessage()
+            if 'elapsed:' in message.lower():
+                try:
+                    # 提取响应时间
+                    parts = message.split('elapsed:')
+                    if len(parts) > 1:
+                        time_str = parts[1].strip().split()[0]
+                        if time_str.endswith('ms'):
+                            response_time = float(time_str[:-2])
+                        elif time_str.endswith('s'):
+                            response_time = float(time_str[:-1]) * 1000
+                        else:
+                            response_time = float(time_str)
+                        
+                        self.metrics['response_times'].append({
+                            'time': response_time,
+                            'timestamp': time.time()
+                        })
+                        
+                        # 限制数量
+                        if len(self.metrics['response_times']) > 1000:
+                            self.metrics['response_times'] = \
+                                self.metrics['response_times'][-500:]
+                except (ValueError, IndexError):
+                    pass
+    
+    def get_performance_stats(self) -> Dict[str, Any]:
+        """获取性能统计"""
+        with self._lock:
+            stats = self.metrics.copy()
+            
+            # 计算响应时间统计
+            if self.metrics['response_times']:
+                times = [rt['time'] for rt in self.metrics['response_times']]
+                stats['response_time_stats'] = {
+                    'avg': sum(times) / len(times),
+                    'min': min(times),
+                    'max': max(times),
+                    'count': len(times)
+                }
+            
+            # 计算运行时间
+            stats['uptime'] = time.time() - self.metrics['start_time']
+            
+            return stats
+    elif size_str.endswith('GB'):
+        return int(size_str[:-2]) * 1024 * 1024 * 1024
+    else:
         return int(size_str)
 
 def setup_logger(level: str = "INFO", log_file: Optional[str] = None, 
