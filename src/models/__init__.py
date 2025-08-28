@@ -335,3 +335,100 @@ class ThreatAssessment:
     def __post_init__(self):
         if self.assessment_time is None:
             self.assessment_time = datetime.now()
+
+
+# 新增数据模型 - 漏洞报告与修复管理
+
+@dataclass
+class VulnerabilityReport:
+    """漏洞报告"""
+    device_id: str
+    vulnerability_count: int = 0
+    critical_count: int = 0
+    high_count: int = 0
+    medium_count: int = 0
+    low_count: int = 0
+    risk_level: ThreatLevel = ThreatLevel.LOW
+    vulnerabilities: List[Dict[str, Any]] = field(default_factory=list)
+    scan_summary: Dict[str, Any] = field(default_factory=dict)
+    scan_time: datetime = field(default_factory=datetime.now)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'device_id': self.device_id,
+            'vulnerability_count': self.vulnerability_count,
+            'critical_count': self.critical_count,
+            'high_count': self.high_count,
+            'medium_count': self.medium_count,
+            'low_count': self.low_count,
+            'risk_level': self.risk_level.value,
+            'vulnerabilities': self.vulnerabilities,
+            'scan_summary': self.scan_summary,
+            'scan_time': self.scan_time.isoformat()
+        }
+
+@dataclass
+class ScanResult:
+    """扫描结果"""
+    scan_id: str
+    device_id: str
+    scan_type: str
+    status: str
+    progress: int = 0
+    start_time: datetime = field(default_factory=datetime.now)
+    end_time: Optional[datetime] = None
+    results: Dict[str, Any] = field(default_factory=dict)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'scan_id': self.scan_id,
+            'device_id': self.device_id,
+            'scan_type': self.scan_type,
+            'status': self.status,
+            'progress': self.progress,
+            'start_time': self.start_time.isoformat(),
+            'end_time': self.end_time.isoformat() if self.end_time else None,
+            'results': self.results
+        }
+
+@dataclass
+class SecurityEvent:
+    """安全事件"""
+    event_id: str
+    event_type: str
+    device_id: str
+    severity: str
+    description: str
+    details: Dict[str, Any] = field(default_factory=dict)
+    timestamp: datetime = field(default_factory=datetime.now)
+    acknowledged: bool = False
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'event_id': self.event_id,
+            'event_type': self.event_type,
+            'device_id': self.device_id,
+            'severity': self.severity,
+            'description': self.description,
+            'details': self.details,
+            'timestamp': self.timestamp.isoformat(),
+            'acknowledged': self.acknowledged
+        }
+
+@dataclass
+class MonitoringStatus:
+    """监控状态"""
+    device_id: str
+    monitoring_enabled: bool = False
+    last_check: Optional[datetime] = None
+    alert_level: ThreatLevel = ThreatLevel.LOW
+    active_alerts: int = 0
+    
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'device_id': self.device_id,
+            'monitoring_enabled': self.monitoring_enabled,
+            'last_check': self.last_check.isoformat() if self.last_check else None,
+            'alert_level': self.alert_level.value,
+            'active_alerts': self.active_alerts
+        }
