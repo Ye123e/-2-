@@ -459,7 +459,7 @@ class SecurityAPIService(LoggerMixin):
                 }
                 
                 # 执行高级修复
-                result = self.repair_engine.execute_advanced_repair(device_id, repair_config)
+                result = self.repair_engine.execute_advanced_repair(device_id, repair_config)  # pyright: ignore[reportAttributeAccessIssue]
                 
                 return jsonify(APIResponse.success(result, "高级修复任务已启动"))
             
