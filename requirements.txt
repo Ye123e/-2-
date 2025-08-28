@@ -1,0 +1,77 @@
+# Android系统修复工具依赖包
+# 核心依赖
+
+# ADB连接和Android设备通信
+adb-shell>=0.4.0
+
+# 网络请求
+requests>=2.28.0
+urllib3>=1.26.0
+
+# 图像处理
+Pillow>=9.0.0
+
+# 系统进程监控
+psutil>=5.9.0
+
+# 文件类型检测
+python-magic-bin>=0.4.14; platform_system == "Windows"
+python-magic>=0.4.27; platform_system != "Windows"
+
+# 文件系统监控
+watchdog>=2.1.0
+
+# 安全和病毒检测
+yara-python>=4.2.0
+# pyclamd>=0.5.0  # 可选，需要ClamAV服务
+
+# GUI框架 (可选，根据选择的框架使用)
+# PyQt5>=5.15.0  # 如果使用PyQt5
+# PyQt6>=6.2.0   # 如果使用PyQt6
+# kivy>=2.1.0    # 如果使用Kivy
+
+# 数据处理和序列化
+pyyaml>=6.0
+toml>=0.10.0
+
+# 日志和配置
+coloredlogs>=15.0
+python-dateutil>=2.8.0
+
+# 加密和哈希
+cryptography>=3.4.0
+# hashlib 是内置模块，不需要额外安装
+
+# 压缩和解压
+py7zr>=0.20.0
+
+# 多线程和异步 (threading是内置模块)
+# concurrent.futures 也是内置模块
+
+# 测试框架
+pytest>=7.0.0
+pytest-cov>=4.0.0
+pytest-mock>=3.0.0
+
+# 开发工具
+black>=22.0.0
+flake8>=5.0.0
+mypy>=0.991
+
+# 文档生成
+sphinx>=5.0.0
+sphinx-rtd-theme>=1.0.0
+
+# 打包和分发
+pyinstaller>=5.0.0
+setuptools>=65.0.0
+wheel>=0.37.0
+
+# 网络工具
+netifaces>=0.11.0
+
+# JSON和数据处理
+orjson>=3.8.0
+
+# 高性能文件操作
+send2trash>=1.8.0
