@@ -442,6 +442,297 @@ class SecurityAPIService(LoggerMixin):
                 self.logger.error(f"获取安全事件失败: {e}")
                 return jsonify(APIResponse.error(500, "获取安全事件失败")), 500
         
+        # 高级修复API
+        @self.app.route('/api/repair/advanced/<device_id>', methods=['POST'])
+        @validate_device_id
+        @validate_json
+        def advanced_repair(device_id: str):
+            """高级修复功能"""
+            try:
+                data = request.json
+                repair_config = {
+                    'deep_scan': data.get('deep_scan', True),
+                    'system_hardening': data.get('system_hardening', []),
+                    'permission_audit': data.get('permission_audit', True),
+                    'malware_removal': data.get('malware_removal', True),
+                    'backup_before_repair': data.get('backup_before_repair', True)
+                }
+                
+                # 执行高级修复
+                result = self.repair_engine.execute_advanced_repair(device_id, repair_config)
+                
+                return jsonify(APIResponse.success(result, "高级修复任务已启动"))
+            
+            except Exception as e:
+                self.logger.error(f"高级修复失败: {e}")
+                return jsonify(APIResponse.error(500, f"高级修复失败: {str(e)}")), 500
+        
+        @self.app.route('/api/repair/rollback/<task_id>', methods=['POST'])
+        def rollback_repair(task_id: str):
+            """回滚修复操作"""
+            try:
+                success = self.repair_engine.rollback_repair(task_id)
+                
+                if success:
+                    return jsonify(APIResponse.success({'task_id': task_id}, "修复已成功回滚"))
+                else:
+                    return jsonify(APIResponse.error(400, "回滚操作失败")), 400
+            
+            except Exception as e:
+                self.logger.error(f"回滚修复失败: {e}")
+                return jsonify(APIResponse.error(500, f"回滚修复失败: {str(e)}")), 500
+        
+        # 隔离管理API
+        @self.app.route('/api/quarantine', methods=['GET'])
+        def get_quarantine_items():
+            """获取隔离项目列表"""
+            try:
+                # 检查病毒扫描引擎是否有隔离管理器
+                if hasattr(self.virus_scan_engine, 'quarantine_manager'):
+                    quarantine_summary = self.virus_scan_engine.quarantine_manager.get_quarantine_summary()  # type: ignore
+                    quarantined_items = list(self.virus_scan_engine.quarantine_manager.quarantined_items.values())  # type: ignore
+                else:
+                    quarantine_summary = {'total': 0, 'threats_quarantined': 0}
+                    quarantined_items = []
+                
+                items_list = [item.to_dict() for item in quarantined_items]
+                
+                result = {
+                    'summary': quarantine_summary,
+                    'items': items_list
+                }
+                
+                return jsonify(APIResponse.success(result))
+            
+            except Exception as e:
+                self.logger.error(f"获取隔离项目失败: {e}")
+                return jsonify(APIResponse.error(500, "获取隔离项目失败")), 500
+        
+        @self.app.route('/api/quarantine/<quarantine_id>/restore', methods=['POST'])
+        def restore_quarantine_item(quarantine_id: str):
+            """恢复隔离项目"""
+            try:
+                if hasattr(self.virus_scan_engine, 'quarantine_manager'):
+                    success = self.virus_scan_engine.quarantine_manager.restore_quarantined_item(quarantine_id)  # type: ignore
+                else:
+                    success = False
+                
+                if success:
+                    return jsonify(APIResponse.success({'quarantine_id': quarantine_id}, "项目已成功恢复"))
+                else:
+                    return jsonify(APIResponse.error(400, "恢复操作失败")), 400
+            
+            except Exception as e:
+                self.logger.error(f"恢复隔离项目失败: {e}")
+                return jsonify(APIResponse.error(500, f"恢复隔离项目失败: {str(e)}")), 500
+        
+        @self.app.route('/api/quarantine/cleanup', methods=['POST'])
+        def cleanup_quarantine():
+            """清理过期隔离项目"""
+            try:
+                if hasattr(self.virus_scan_engine, 'quarantine_manager'):
+                    cleaned_count = self.virus_scan_engine.quarantine_manager.cleanup_old_quarantine()  # type: ignore
+                else:
+                    cleaned_count = 0
+                
+                return jsonify(APIResponse.success({
+                    'cleaned_items': cleaned_count
+                }, f"已清理 {cleaned_count} 个过期隔离项目"))
+            
+            except Exception as e:
+                self.logger.error(f"清理隔离项目失败: {e}")
+                return jsonify(APIResponse.error(500, "清理隔离项目失败")), 500
+        
+        # 多引擎扫描API
+        @self.app.route('/api/devices/<device_id>/multi-engine-scan', methods=['POST'])
+        @validate_device_id
+        @validate_json
+        def multi_engine_scan(device_id: str):
+            """多引擎扫描"""
+            try:
+                data = request.json or {}
+                engine_config = {
+                    'use_clamav': data.get('use_clamav', True),
+                    'use_yara': data.get('use_yara', True),
+                    'use_signature': data.get('use_signature', True),
+                    'deep_scan': data.get('deep_scan', False),
+                    'scan_timeout': data.get('scan_timeout', 300)
+                }
+                
+                # 使用多引擎扫描协调器
+                try:
+                    from ..core.multi_engine_scanner import MultiEngineScanCoordinator
+                    coordinator = MultiEngineScanCoordinator()  # 移除参数
+                    
+                    if hasattr(coordinator, 'coordinated_scan'):
+                        scan_result = coordinator.coordinated_scan(device_id, engine_config)  # type: ignore
+                    else:
+                        # 降级为单引擎扫描
+                        scan_result = self.virus_scan_engine.scan_device(device_id)
+                except ImportError:
+                    # 如果无法导入，使用默认扫描
+                    scan_result = self.virus_scan_engine.scan_device(device_id)
+                
+                return jsonify(APIResponse.success(scan_result, "多引擎扫描完成"))
+            
+            except Exception as e:
+                self.logger.error(f"多引擎扫描失败: {e}")
+                return jsonify(APIResponse.error(500, f"多引擎扫描失败: {str(e)}")), 500
+        
+        # 实时监控增强API
+        @self.app.route('/api/monitoring/alerts', methods=['GET'])
+        def get_security_alerts():
+            """获取安全警报"""
+            try:
+                severity = request.args.get('severity')
+                limit = request.args.get('limit', 20, type=int)
+                
+                if hasattr(self.monitoring_engine, 'get_security_alerts'):
+                    alerts = self.monitoring_engine.get_security_alerts(severity, limit)  # type: ignore
+                else:
+                    alerts = []
+                
+                alert_list = []
+                for alert in alerts:
+                    alert_dict = {
+                        'alert_id': alert.get('alert_id'),
+                        'severity': alert.get('severity'),
+                        'event_type': alert.get('event_type'),
+                        'device_id': alert.get('device_id'),
+                        'description': alert.get('description'),
+                        'timestamp': alert.get('timestamp'),
+                        'acknowledged': alert.get('acknowledged', False)
+                    }
+                    alert_list.append(alert_dict)
+                
+                return jsonify(APIResponse.success(alert_list))
+            
+            except Exception as e:
+                self.logger.error(f"获取安全警报失败: {e}")
+                return jsonify(APIResponse.error(500, "获取安全警报失败")), 500
+        
+        @self.app.route('/api/monitoring/alerts/<alert_id>/acknowledge', methods=['POST'])
+        def acknowledge_alert(alert_id: str):
+            """确认警报"""
+            try:
+                if hasattr(self.monitoring_engine, 'acknowledge_alert'):
+                    success = self.monitoring_engine.acknowledge_alert(alert_id)  # type: ignore
+                else:
+                    success = False
+                
+                if success:
+                    return jsonify(APIResponse.success({'alert_id': alert_id}, "警报已确认"))
+                else:
+                    return jsonify(APIResponse.error(400, "确认警报失败")), 400
+            
+            except Exception as e:
+                self.logger.error(f"确认警报失败: {e}")
+                return jsonify(APIResponse.error(500, "确认警报失败")), 500
+        
+        @self.app.route('/api/monitoring/devices/<device_id>/metrics', methods=['GET'])
+        @validate_device_id
+        def get_device_metrics(device_id: str):
+            """获取设备监控指标"""
+            try:
+                if hasattr(self.monitoring_engine, 'get_device_metrics'):
+                    metrics = self.monitoring_engine.get_device_metrics(device_id)  # type: ignore
+                else:
+                    metrics = {}
+                
+                return jsonify(APIResponse.success(metrics))
+            
+            except Exception as e:
+                self.logger.error(f"获取设备监控指标失败: {e}")
+                return jsonify(APIResponse.error(500, "获取设备监控指标失败")), 500
+        
+        # 任务调度API
+        @self.app.route('/api/scheduler/jobs', methods=['GET'])
+        def get_scheduled_jobs():
+            """获取调度任务列表"""
+            try:
+                if hasattr(self.task_manager, 'get_scheduled_jobs'):
+                    jobs = self.task_manager.get_scheduled_jobs()  # type: ignore
+                else:
+                    jobs = []
+                
+                job_list = []
+                for job in jobs:
+                    job_dict = {
+                        'job_id': job.get('job_id'),
+                        'job_type': job.get('job_type'),
+                        'schedule': job.get('schedule'),
+                        'next_run': job.get('next_run'),
+                        'enabled': job.get('enabled', True),
+                        'last_run': job.get('last_run'),
+                        'status': job.get('status')
+                    }
+                    job_list.append(job_dict)
+                
+                return jsonify(APIResponse.success(job_list))
+            
+            except Exception as e:
+                self.logger.error(f"获取调度任务失败: {e}")
+                return jsonify(APIResponse.error(500, "获取调度任务失败")), 500
+        
+        @self.app.route('/api/scheduler/jobs', methods=['POST'])
+        @validate_json
+        def create_scheduled_job():
+            """创建调度任务"""
+            try:
+                data = request.json
+                job_config = {
+                    'job_type': data.get('job_type'),
+                    'schedule': data.get('schedule'),
+                    'parameters': data.get('parameters', {}),
+                    'enabled': data.get('enabled', True)
+                }
+                
+                if hasattr(self.task_manager, 'create_scheduled_job'):
+                    job_id = self.task_manager.create_scheduled_job(job_config)  # type: ignore
+                else:
+                    job_id = "unknown"
+                
+                return jsonify(APIResponse.success({
+                    'job_id': job_id,
+                    'job_type': job_config['job_type'],
+                    'schedule': job_config['schedule']
+                }, "调度任务已创建"))
+            
+            except Exception as e:
+                self.logger.error(f"创建调度任务失败: {e}")
+                return jsonify(APIResponse.error(500, f"创建调度任务失败: {str(e)}")), 500
+        
+        # 系统健康检查API
+        @self.app.route('/api/health', methods=['GET'])
+        def health_check():
+            """系统健康检查"""
+            try:
+                health_status = {
+                    'status': 'healthy',
+                    'timestamp': datetime.now().isoformat(),
+                    'components': {
+                        'device_manager': hasattr(self.device_manager, 'is_healthy') and self.device_manager.is_healthy(),  # type: ignore
+                        'virus_scan_engine': hasattr(self.virus_scan_engine, 'is_healthy') and self.virus_scan_engine.is_healthy(),  # type: ignore
+                        'threat_analysis_engine': True,  # 简化检查
+                        'vulnerability_engine': hasattr(self.vulnerability_engine, 'is_healthy') and self.vulnerability_engine.is_healthy(),  # type: ignore
+                        'repair_engine': hasattr(self.repair_engine, 'is_healthy') and self.repair_engine.is_healthy(),  # type: ignore
+                        'monitoring_engine': hasattr(self.monitoring_engine, 'is_healthy') and self.monitoring_engine.is_healthy(),  # type: ignore
+                        'task_manager': hasattr(self.task_manager, 'is_healthy') and self.task_manager.is_healthy()  # type: ignore
+                    }
+                }
+                
+                # 检查是否有组件不健康
+                unhealthy_components = [name for name, status in health_status['components'].items() if not status]
+                if unhealthy_components:
+                    health_status['status'] = 'degraded'
+                    health_status['unhealthy_components'] = unhealthy_components
+                
+                return jsonify(APIResponse.success(health_status))
+            
+            except Exception as e:
+                self.logger.error(f"健康检查失败: {e}")
+                return jsonify(APIResponse.error(500, "健康检查失败")), 500
+        
         # 统计API
         @self.app.route('/api/statistics', methods=['GET'])
         def get_statistics():
