@@ -43,6 +43,63 @@ class TaskStatus(Enum):
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
 
+class ThreatLevel(Enum):
+    """威胁级别枚举"""
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+    CRITICAL = "CRITICAL"
+
+class ThreatType(Enum):
+    """威胁类型枚举"""
+    BENIGN = "BENIGN"
+    POTENTIALLY_UNWANTED = "POTENTIALLY_UNWANTED"
+    MALWARE = "MALWARE"
+    TROJAN = "TROJAN"
+    SPYWARE = "SPYWARE"
+    ADWARE = "ADWARE"
+    ROOTKIT = "ROOTKIT"
+
+class EngineType(Enum):
+    """引擎类型枚举"""
+    CLAMAV = "CLAMAV"
+    YARA = "YARA"
+    CUSTOM = "CUSTOM"
+    HEURISTIC = "HEURISTIC"
+
+class IndicatorType(Enum):
+    """安全指标类型枚举"""
+    PERMISSION_ABUSE = "PERMISSION_ABUSE"
+    SIGNATURE_INVALID = "SIGNATURE_INVALID"
+    UNKNOWN_SOURCE = "UNKNOWN_SOURCE"
+    SUSPICIOUS_BEHAVIOR = "SUSPICIOUS_BEHAVIOR"
+    NETWORK_ANOMALY = "NETWORK_ANOMALY"
+    FILE_MODIFICATION = "FILE_MODIFICATION"
+
+class Severity(Enum):
+    """严重程度枚举"""
+    INFO = "INFO"
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+    CRITICAL = "CRITICAL"
+
+class ActionType(Enum):
+    """缓解措施类型枚举"""
+    QUARANTINE = "QUARANTINE"
+    DELETE = "DELETE"
+    MONITOR = "MONITOR"
+    BLOCK = "BLOCK"
+    ALERT = "ALERT"
+    DISABLE = "DISABLE"
+
+class Priority(Enum):
+    """优先级枚举"""
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+    URGENT = "URGENT"
+
 @dataclass
 class DeviceInfo:
     """设备信息数据模型"""
