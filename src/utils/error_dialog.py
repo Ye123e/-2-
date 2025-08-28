@@ -29,7 +29,7 @@ class ErrorSolution:
     description: str
     steps: List[str]
     auto_fix_available: bool = False
-    auto_fix_function: Optional[callable] = None
+    auto_fix_function: Optional[Callable[[], bool]] = None
     external_link: Optional[str] = None
 
 @dataclass
@@ -176,13 +176,9 @@ class ErrorMessageTranslator:
         
         # 特殊处理
         if 'adb' in str(exception).lower() or 'android' in str(exception).lower():
-            error_info = self.translations.get('ADBError')
+            error_info = self.translations.get('ADBError') or self.translations['UnknownError']
         else:
-            error_info = self.translations.get(exception_type, self.translations.get('UnknownError'))
-        
-        # 确保error_info不为None
-        if error_info is None:
-            error_info = self.translations['UnknownError']
+            error_info = self.translations.get(exception_type) or self.translations['UnknownError']
         
         # 创建一个副本以避免修改原始对象
         from copy import deepcopy
