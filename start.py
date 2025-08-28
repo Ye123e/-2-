@@ -77,7 +77,7 @@ def main():
         # 启动GUI应用
         print("正在启动图形界面...")
         app = MainWindow(config)
-        app.run()
+        app.run()  # type: ignore
         
     except ImportError as e:
         print(f"导入模块失败: {e}")
