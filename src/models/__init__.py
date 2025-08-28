@@ -279,3 +279,59 @@ class FileChecksum:
     sha256: str = ""
     size: int = 0
     last_modified: Optional[datetime] = None
+
+@dataclass
+class MalwareInfo:
+    """恶意软件信息数据模型"""
+    package_name: str
+    threat_type: ThreatType
+    detection_engine: EngineType
+    confidence: float = 0.0
+    signature_name: str = ""
+    description: str = ""
+    first_seen: Optional[datetime] = None
+    
+    def __post_init__(self):
+        if self.first_seen is None:
+            self.first_seen = datetime.now()
+
+@dataclass
+class SecurityIndicator:
+    """安全指标数据模型"""
+    indicator_type: IndicatorType
+    severity: Severity
+    confidence: float
+    description: str
+    evidence: Dict[str, Any] = field(default_factory=dict)
+    timestamp: Optional[datetime] = None
+    
+    def __post_init__(self):
+        if self.timestamp is None:
+            self.timestamp = datetime.now()
+
+@dataclass
+class MitigationAction:
+    """缓解措施数据模型"""
+    action_type: ActionType
+    priority: Priority
+    description: str
+    estimated_time: int = 0  # 预计执行时间（秒）
+    requires_user_consent: bool = False
+    parameters: Dict[str, Any] = field(default_factory=dict)
+    
+@dataclass
+class ThreatAssessment:
+    """威胁评估报告数据模型"""
+    app_package: str
+    risk_score: float
+    threat_level: ThreatLevel
+    threat_categories: List[ThreatType] = field(default_factory=list)
+    indicators: List[SecurityIndicator] = field(default_factory=list)
+    mitigation_actions: List[MitigationAction] = field(default_factory=list)
+    assessment_time: Optional[datetime] = None
+    confidence: float = 0.0
+    details: Dict[str, Any] = field(default_factory=dict)
+    
+    def __post_init__(self):
+        if self.assessment_time is None:
+            self.assessment_time = datetime.now()
