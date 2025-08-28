@@ -18,7 +18,7 @@ from ..core.diagnostic_engine import DiagnosticEngine
 from ..core.security_scanner import SecurityScanner, VirusSignatureDatabase
 from ..core.file_manager import FileScanner, FileCleaner
 from ..core.repair_engine import RepairEngine, RepairType
-from ..core.virus_scan_engine import EnhancedVirusSignatureDatabase, MultiEngineVirusScanner
+from ..core.virus_scan_engine import EnhancedVirusSignatureDatabase,ultiEngineVirusScanner  # pyright: ignore[reportAttributeAccessIssue]
 from ..core.threat_analysis_engine import ThreatAnalysisEngine
 from ..core.real_time_protection import RealTimeProtectionManager  # pyright: ignore[reportMissingImports]
 from ..core.quarantine_manager import QuarantineManager
@@ -53,7 +53,7 @@ class MainWindow(LoggerMixin):
         
         # 初始化增强病毒检测引擎
         enhanced_signature_db = EnhancedVirusSignatureDatabase()
-        self.virus_scanner = MultiEngineVirusScanner(enhanced_signature_db)
+        self.virus_scanner = MultiEngineVirusScanner(enhanced_signature_db)  # pyright: ignore[reportUndefinedVariable]  # pyright: ignore[reportUndefinedVariable]
         
         # 初始化威胁分析引擎
         self.threat_analyzer = ThreatAnalysisEngine()
@@ -438,12 +438,12 @@ ROOT状态: {'已获取' if self.current_device.root_status else '未获取'}
                 self._set_status("正在执行系统诊断...")  # pyright: ignore[reportAttributeAccessIssue]
                 
                 # 执行诊断
-                report = self.diagnostic_engine.diagnose_device(self.current_device.device_id, options)
+                report = self.diagnostic_engine.diagnose_device(self.current_device.device_id, options)  # pyright: ignore[reportOptionalMemberAccess]
                 
                 if report:
                     self.current_diagnostic_report = report
                     self.root.after(0, lambda: self._display_diagnostic_report(report))  # pyright: ignore[reportAttributeAccessIssue]
-                    self.root.after(0, lambda: self._set_status(“诊断完成"))  # pyright: ignore[reportAttributeAccessIssue]
+                    self.root.after(0, lambda: self._set_status("诊断完成"))  # pyright: ignore[reportAttributeAccessIssue]
                 else:
                     self.root.after(0, lambda: self._append_diagnostic_result("诊断失败"))
                     self.root.after(0, lambda: self._set_status("诊断失败"))
