@@ -1,637 +1,689 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-依赖检查器
-用于检查和验证应用程序依赖，提供详细的错误诊断和修复建议
+依赖检查模块
+用于检查运行环境、依赖包、工具等，防止闪退问题
 """
 
 import sys
 import os
+import shutil
 import subprocess
 import importlib
-import pkg_resources
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any
-import json
-import platform
 import logging
-from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, List, Tuple, Optional, Any
+from dataclasses import dataclass, field
+from enum import Enum
+
+class CheckStatus(Enum):
+    """检查状态枚举"""
+    PASSED = "passed"
+    FAILED = "failed"
+    WARNING = "warning"
+    SKIPPED = "skipped"
 
 @dataclass
-class DependencyInfo:
-    """依赖信息"""
+class CheckResult:
+    """检查结果数据类"""
     name: str
-    required_version: str = ""
-    installed_version: str = ""
-    is_available: bool = False
-    is_version_compatible: bool = False
-    import_error: Optional[str] = None
-    install_command: str = ""
-    description: str = ""
-
-@dataclass
-class SystemRequirement:
-    """系统要求"""
-    python_min_version: tuple = (3, 8)
-    python_max_version: tuple = (3, 12)
-    platform_supported: List[str] = None
-    memory_min_mb: int = 512
-    disk_space_min_mb: int = 100
+    status: CheckStatus
+    message: str
+    details: Dict[str, Any] = field(default_factory=dict)
+    fix_suggestions: List[str] = field(default_factory=list)
+    error: Optional[Exception] = None
 
 class DependencyChecker:
     """依赖检查器"""
     
-    def __init__(self):
+    def __init__(self, config_path: Optional[str] = None):
+        """
+        初始化依赖检查器
+        
+        Args:
+            config_path: 配置文件路径
+        """
+        self.config_path = config_path
         self.logger = logging.getLogger(__name__)
-        self.project_root = Path(__file__).parent.parent.parent
+        self.check_results: Dict[str, CheckResult] = {}
         
-        # 系统要求
-        self.system_requirements = SystemRequirement(
-            platform_supported=['Windows', 'Linux', 'Darwin']
-        )
+        # 必需的Python版本
+        self.min_python_version = (3, 8, 0)
         
-        # 核心依赖列表
-        self.core_dependencies = {
-            'tkinter': DependencyInfo(
-                name='tkinter',
-                description='GUI框架（Python内置）',
-                install_command='内置模块，无需安装'
-            ),
-            'requests': DependencyInfo(
-                name='requests',
-                required_version='>=2.28.0',
-                description='HTTP请求库',
-                install_command='pip install requests>=2.28.0'
-            ),
-            'psutil': DependencyInfo(
-                name='psutil',
-                required_version='>=5.9.0',
-                description='系统进程监控',
-                install_command='pip install psutil>=5.9.0'
-            ),
-            'adb_shell': DependencyInfo(
-                name='adb_shell',
-                required_version='>=0.4.0',
-                description='ADB连接库',
-                install_command='pip install adb-shell>=0.4.0'
-            ),
-            'PIL': DependencyInfo(
-                name='PIL',
-                required_version='>=9.0.0',
-                description='图像处理库',
-                install_command='pip install Pillow>=9.0.0'
-            )
-        }
+        # 核心依赖包列表
+        self.core_packages = [
+            ('tkinter', '内置GUI框架'),
+            ('threading', '内置多线程模块'),
+            ('configparser', '内置配置解析模块'),
+            ('pathlib', '内置路径处理模块'),
+            ('logging', '内置日志模块'),
+            ('subprocess', '内置进程管理模块'),
+            ('json', '内置JSON处理模块')
+        ]
         
-        # 可选依赖列表
-        self.optional_dependencies = {
-            'yara': DependencyInfo(
-                name='yara',
-                required_version='>=4.2.0',
-                description='YARA规则引擎（病毒检测）',
-                install_command='pip install yara-python>=4.2.0'
-            ),
-            'watchdog': DependencyInfo(
-                name='watchdog',
-                required_version='>=2.1.0',
-                description='文件系统监控',
-                install_command='pip install watchdog>=2.1.0'
-            ),
-            'coloredlogs': DependencyInfo(
-                name='coloredlogs',
-                required_version='>=15.0',
-                description='彩色日志输出',
-                install_command='pip install coloredlogs>=15.0'
-            )
-        }
+        # 第三方依赖包列表
+        self.third_party_packages = [
+            ('adb_shell', 'ADB Shell连接'),
+            ('requests', 'HTTP请求库'),
+            ('psutil', '系统进程监控'),
+            ('yara', 'YARA规则引擎'),
+            ('PIL', 'Python图像库'),
+            ('watchdog', '文件系统监控'),
+            ('cryptography', '加密库')
+        ]
+        
+        # 可选依赖包
+        self.optional_packages = [
+            ('coloredlogs', '彩色日志输出'),
+            ('py7zr', '7z压缩支持'),
+            ('send2trash', '安全删除文件'),
+            ('netifaces', '网络接口信息')
+        ]
+        
+        # 必需目录列表
+        self.required_directories = [
+            'logs',
+            'data',
+            'backups',
+            'data/quarantine',
+            'data/virus_signatures',
+            'data/system_resources'
+        ]
     
-    def check_all_dependencies(self) -> Dict[str, Any]:
-        """检查所有依赖项"""
-        results = {
-            'system_check': self._check_system_requirements(),
-            'core_dependencies': self._check_dependencies(self.core_dependencies),
-            'optional_dependencies': self._check_dependencies(self.optional_dependencies),
-            'project_structure': self._check_project_structure(),
-            'permissions': self._check_permissions(),
-            'summary': {}
-        }
+    def check_all(self) -> Dict[str, CheckResult]:
+        """
+        执行全面的依赖检查
         
-        # 生成摘要
-        results['summary'] = self._generate_summary(results)
-        return results
+        Returns:
+            检查结果字典
+        """
+        self.logger.info("开始执行系统依赖检查...")
+        
+        # 清空之前的结果
+        self.check_results.clear()
+        
+        # 执行各项检查
+        self._check_python_version()
+        self._check_core_packages()
+        self._check_third_party_packages()
+        self._check_optional_packages()
+        self._check_adb_availability()
+        self._check_required_directories()
+        self._check_file_permissions()
+        self._check_system_resources()
+        self._check_network_connectivity()
+        
+        # 生成总结
+        self._generate_summary()
+        
+        self.logger.info("依赖检查完成")
+        return self.check_results
     
-    def _check_system_requirements(self) -> Dict[str, Any]:
-        """检查系统要求"""
-        results = {
-            'python_version': {
-                'current': sys.version_info[:3],
-                'required_min': self.system_requirements.python_min_version,
-                'required_max': self.system_requirements.python_max_version,
-                'compatible': False,
-                'details': ''
-            },
-            'platform': {
-                'current': platform.system(),
-                'supported': self.system_requirements.platform_supported,
-                'compatible': False,
-                'details': ''
-            },
-            'memory': {
-                'available_mb': self._get_available_memory(),
-                'required_mb': self.system_requirements.memory_min_mb,
-                'sufficient': False,
-                'details': ''
-            },
-            'disk_space': {
-                'available_mb': self._get_available_disk_space(),
-                'required_mb': self.system_requirements.disk_space_min_mb,
-                'sufficient': False,
-                'details': ''
-            }
-        }
-        
-        # 检查Python版本
-        current_version = sys.version_info[:2]
-        min_version = self.system_requirements.python_min_version
-        max_version = self.system_requirements.python_max_version
-        
-        if min_version <= current_version <= max_version:
-            results['python_version']['compatible'] = True
-            results['python_version']['details'] = f"Python {'.'.join(map(str, current_version))} 符合要求"
-        else:
-            results['python_version']['details'] = f"Python版本不兼容，当前：{'.'.join(map(str, current_version))}，要求：{'.'.join(map(str, min_version))}-{'.'.join(map(str, max_version))}"
-        
-        # 检查平台
-        current_platform = platform.system()
-        if current_platform in self.system_requirements.platform_supported:
-            results['platform']['compatible'] = True
-            results['platform']['details'] = f"平台 {current_platform} 受支持"
-        else:
-            results['platform']['details'] = f"平台 {current_platform} 可能不受支持"
-        
-        # 检查内存
-        available_memory = results['memory']['available_mb']
-        if available_memory >= self.system_requirements.memory_min_mb:
-            results['memory']['sufficient'] = True
-            results['memory']['details'] = f"可用内存 {available_memory}MB 充足"
-        else:
-            results['memory']['details'] = f"可用内存不足：{available_memory}MB < {self.system_requirements.memory_min_mb}MB"
-        
-        # 检查磁盘空间
-        available_disk = results['disk_space']['available_mb']
-        if available_disk >= self.system_requirements.disk_space_min_mb:
-            results['disk_space']['sufficient'] = True
-            results['disk_space']['details'] = f"可用磁盘空间 {available_disk}MB 充足"
-        else:
-            results['disk_space']['details'] = f"磁盘空间不足：{available_disk}MB < {self.system_requirements.disk_space_min_mb}MB"
-        
-        return results
-    
-    def _check_dependencies(self, dependencies: Dict[str, DependencyInfo]) -> Dict[str, DependencyInfo]:
-        """检查依赖项"""
-        results = {}
-        
-        for dep_name, dep_info in dependencies.items():
-            result = DependencyInfo(**dep_info.__dict__)
+    def _check_python_version(self) -> None:
+        """检查Python版本"""
+        try:
+            current_version = sys.version_info
+            version_tuple = (current_version.major, current_version.minor, current_version.micro)
+            version_str = f"{current_version.major}.{current_version.minor}.{current_version.micro}"
             
+            if version_tuple >= self.min_python_version:
+                self.check_results['python_version'] = CheckResult(
+                    name="Python版本",
+                    status=CheckStatus.PASSED,
+                    message=f"Python版本检查通过: {version_str}",
+                    details={
+                        'current_version': version_str,
+                        'required_version': f"{self.min_python_version[0]}.{self.min_python_version[1]}.{self.min_python_version[2]}",
+                        'executable': sys.executable
+                    }
+                )
+            else:
+                min_version_str = f"{self.min_python_version[0]}.{self.min_python_version[1]}.{self.min_python_version[2]}"
+                self.check_results['python_version'] = CheckResult(
+                    name="Python版本",
+                    status=CheckStatus.FAILED,
+                    message=f"Python版本过低: {version_str}, 需要 >= {min_version_str}",
+                    details={
+                        'current_version': version_str,
+                        'required_version': min_version_str,
+                        'executable': sys.executable
+                    },
+                    fix_suggestions=[
+                        f"请升级Python到{min_version_str}或更高版本",
+                        "建议从 https://www.python.org/downloads/ 下载最新版本",
+                        "升级后重新安装项目依赖包"
+                    ]
+                )
+                
+        except Exception as e:
+            self.check_results['python_version'] = CheckResult(
+                name="Python版本",
+                status=CheckStatus.FAILED,
+                message=f"Python版本检查失败: {e}",
+                error=e,
+                fix_suggestions=["检查Python安装是否正确"]
+            )
+    
+    def _check_core_packages(self) -> None:
+        """检查核心内置包"""
+        failed_packages = []
+        
+        for package_name, description in self.core_packages:
             try:
-                # 尝试导入模块
-                if dep_name == 'PIL':
-                    # Pillow特殊处理
-                    import PIL
-                    module = PIL
-                    result.installed_version = PIL.__version__
-                else:
-                    module = importlib.import_module(dep_name)
-                    
-                    # 获取版本信息
-                    if hasattr(module, '__version__'):
-                        result.installed_version = module.__version__
-                    else:
-                        try:
-                            result.installed_version = pkg_resources.get_distribution(dep_name).version
-                        except:
-                            result.installed_version = "未知版本"
+                importlib.import_module(package_name)
+                self.logger.debug(f"核心包检查通过: {package_name}")
+            except ImportError as e:
+                failed_packages.append((package_name, description, str(e)))
+                self.logger.error(f"核心包缺失: {package_name} - {e}")
+        
+        if not failed_packages:
+            self.check_results['core_packages'] = CheckResult(
+                name="核心包",
+                status=CheckStatus.PASSED,
+                message=f"所有核心包检查通过 ({len(self.core_packages)}个)",
+                details={'checked_packages': [pkg[0] for pkg in self.core_packages]}
+            )
+        else:
+            self.check_results['core_packages'] = CheckResult(
+                name="核心包",
+                status=CheckStatus.FAILED,
+                message=f"发现{len(failed_packages)}个核心包缺失",
+                details={'failed_packages': failed_packages},
+                fix_suggestions=[
+                    "这些是Python内置模块，不应该缺失",
+                    "请重新安装Python",
+                    "检查Python安装是否完整"
+                ]
+            )
+    
+    def _check_third_party_packages(self) -> None:
+        """检查第三方依赖包"""
+        failed_packages = []
+        passed_packages = []
+        
+        for package_name, description in self.third_party_packages:
+            try:
+                module = importlib.import_module(package_name)
+                version = getattr(module, '__version__', 'unknown')
+                passed_packages.append((package_name, description, version))
+                self.logger.debug(f"第三方包检查通过: {package_name} v{version}")
+            except ImportError as e:
+                failed_packages.append((package_name, description, str(e)))
+                self.logger.warning(f"第三方包缺失: {package_name} - {e}")
+        
+        if not failed_packages:
+            self.check_results['third_party_packages'] = CheckResult(
+                name="第三方依赖包",
+                status=CheckStatus.PASSED,
+                message=f"所有第三方包检查通过 ({len(passed_packages)}个)",
+                details={'passed_packages': passed_packages}
+            )
+        else:
+            status = CheckStatus.FAILED if len(failed_packages) > len(passed_packages) / 2 else CheckStatus.WARNING
+            
+            self.check_results['third_party_packages'] = CheckResult(
+                name="第三方依赖包",
+                status=status,
+                message=f"发现{len(failed_packages)}个第三方包缺失",
+                details={
+                    'failed_packages': failed_packages,
+                    'passed_packages': passed_packages
+                },
+                fix_suggestions=[
+                    "执行: pip install -r requirements.txt",
+                    "或手动安装缺失的包",
+                    "确保网络连接正常",
+                    "如果安装失败，尝试更新pip: python -m pip install --upgrade pip"
+                ]
+            )
+    
+    def _check_optional_packages(self) -> None:
+        """检查可选依赖包"""
+        missing_packages = []
+        available_packages = []
+        
+        for package_name, description in self.optional_packages:
+            try:
+                module = importlib.import_module(package_name)
+                version = getattr(module, '__version__', 'unknown')
+                available_packages.append((package_name, description, version))
+                self.logger.debug(f"可选包可用: {package_name} v{version}")
+            except ImportError:
+                missing_packages.append((package_name, description))
+                self.logger.debug(f"可选包缺失: {package_name}")
+        
+        if missing_packages:
+            self.check_results['optional_packages'] = CheckResult(
+                name="可选依赖包",
+                status=CheckStatus.WARNING,
+                message=f"发现{len(missing_packages)}个可选包缺失，不影响核心功能",
+                details={
+                    'missing_packages': missing_packages,
+                    'available_packages': available_packages
+                },
+                fix_suggestions=[
+                    "可选包不影响基本功能，可根据需要安装",
+                    "执行: pip install <包名> 来安装特定包"
+                ]
+            )
+        else:
+            self.check_results['optional_packages'] = CheckResult(
+                name="可选依赖包",
+                status=CheckStatus.PASSED,
+                message=f"所有可选包都已安装 ({len(available_packages)}个)",
+                details={'available_packages': available_packages}
+            )
+    
+    def _check_adb_availability(self) -> None:
+        """检查ADB工具可用性"""
+        try:
+            # 首先检查PATH中是否有adb
+            adb_path = shutil.which('adb')
+            
+            if not adb_path:
+                # 检查常见安装路径
+                adb_path = self._find_adb_in_common_paths()
+            
+            if not adb_path:
+                self.check_results['adb_availability'] = CheckResult(
+                    name="ADB工具",
+                    status=CheckStatus.FAILED,
+                    message="未找到ADB工具",
+                    fix_suggestions=[
+                        "安装Android SDK Platform Tools",
+                        "从 https://developer.android.com/studio/releases/platform-tools 下载",
+                        "或安装Android Studio",
+                        "确保adb命令在PATH环境变量中"
+                    ]
+                )
+                return
+            
+            # 测试ADB是否工作
+            try:
+                result = subprocess.run(
+                    [adb_path, 'version'],
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
                 
-                result.is_available = True
-                
-                # 检查版本兼容性
-                if result.required_version and result.installed_version != "未知版本":
-                    result.is_version_compatible = self._check_version_compatibility(
-                        result.installed_version, result.required_version
+                if result.returncode == 0 and 'Android Debug Bridge' in result.stdout:
+                    version_info = result.stdout.strip()
+                    self.check_results['adb_availability'] = CheckResult(
+                        name="ADB工具",
+                        status=CheckStatus.PASSED,
+                        message=f"ADB工具检查通过: {adb_path}",
+                        details={
+                            'adb_path': adb_path,
+                            'version_info': version_info
+                        }
                     )
                 else:
-                    result.is_version_compatible = True
+                    self.check_results['adb_availability'] = CheckResult(
+                        name="ADB工具",
+                        status=CheckStatus.FAILED,
+                        message=f"ADB工具无法正常工作: {result.stderr}",
+                        details={'adb_path': adb_path, 'error': result.stderr},
+                        fix_suggestions=[
+                            "重新安装Android SDK Platform Tools",
+                            "检查ADB工具是否损坏",
+                            "确保有足够的系统权限"
+                        ]
+                    )
+                    
+            except subprocess.TimeoutExpired:
+                self.check_results['adb_availability'] = CheckResult(
+                    name="ADB工具",
+                    status=CheckStatus.FAILED,
+                    message="ADB工具响应超时",
+                    details={'adb_path': adb_path},
+                    fix_suggestions=[
+                        "检查系统资源是否充足",
+                        "重启ADB服务: adb kill-server && adb start-server",
+                        "重新安装ADB工具"
+                    ]
+                )
                 
-            except ImportError as e:
-                result.is_available = False
-                result.import_error = str(e)
+        except Exception as e:
+            self.check_results['adb_availability'] = CheckResult(
+                name="ADB工具",
+                status=CheckStatus.FAILED,
+                message=f"ADB检查异常: {e}",
+                error=e,
+                fix_suggestions=["检查ADB安装和配置"]
+            )
+    
+    def _find_adb_in_common_paths(self) -> Optional[str]:
+        """在常见路径中查找ADB"""
+        common_paths = []
+        
+        if os.name == 'nt':  # Windows
+            common_paths = [
+                os.path.expandvars(r'%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe'),
+                os.path.expandvars(r'%PROGRAMFILES%\Android\Android Studio\bin\adb.exe'),
+                os.path.expandvars(r'%PROGRAMFILES(X86)%\Android\android-sdk\platform-tools\adb.exe'),
+                r'C:\android-sdk\platform-tools\adb.exe'
+            ]
+        else:  # Linux/macOS
+            home = os.path.expanduser('~')
+            common_paths = [
+                f'{home}/Android/Sdk/platform-tools/adb',
+                f'{home}/Library/Android/sdk/platform-tools/adb',  # macOS
+                '/opt/android-sdk/platform-tools/adb',
+                '/usr/local/bin/adb'
+            ]
+        
+        for path in common_paths:
+            if os.path.isfile(path) and os.access(path, os.X_OK):
+                return path
+        
+        # 检查ANDROID_HOME环境变量
+        android_home = os.environ.get('ANDROID_HOME')
+        if android_home:
+            adb_path = os.path.join(android_home, 'platform-tools', 'adb')
+            if os.name == 'nt':
+                adb_path += '.exe'
+            
+            if os.path.isfile(adb_path) and os.access(adb_path, os.X_OK):
+                return adb_path
+        
+        return None
+    
+    def _check_required_directories(self) -> None:
+        """检查必需目录"""
+        missing_dirs = []
+        created_dirs = []
+        
+        for dir_path in self.required_directories:
+            path = Path(dir_path)
+            
+            if not path.exists():
+                try:
+                    path.mkdir(parents=True, exist_ok=True)
+                    created_dirs.append(str(path))
+                    self.logger.info(f"创建目录: {path}")
+                except Exception as e:
+                    missing_dirs.append((str(path), str(e)))
+                    self.logger.error(f"无法创建目录 {path}: {e}")
+        
+        if not missing_dirs:
+            message = "所有必需目录检查通过"
+            if created_dirs:
+                message += f" (自动创建了{len(created_dirs)}个目录)"
+            
+            self.check_results['required_directories'] = CheckResult(
+                name="必需目录",
+                status=CheckStatus.PASSED,
+                message=message,
+                details={
+                    'required_directories': self.required_directories,
+                    'created_directories': created_dirs
+                }
+            )
+        else:
+            self.check_results['required_directories'] = CheckResult(
+                name="必需目录",
+                status=CheckStatus.FAILED,
+                message=f"无法创建{len(missing_dirs)}个必需目录",
+                details={
+                    'missing_directories': missing_dirs,
+                    'created_directories': created_dirs
+                },
+                fix_suggestions=[
+                    "检查文件系统权限",
+                    "确保有足够的磁盘空间",
+                    "手动创建缺失的目录",
+                    "以管理员权限运行程序"
+                ]
+            )
+    
+    def _check_file_permissions(self) -> None:
+        """检查文件权限"""
+        permission_issues = []
+        
+        # 检查当前目录写权限
+        try:
+            test_file = Path('.') / '.permission_test'
+            test_file.write_text('test')
+            test_file.unlink()
+        except Exception as e:
+            permission_issues.append(('当前目录写权限', str(e)))
+        
+        # 检查配置文件权限
+        if self.config_path and os.path.exists(self.config_path):
+            try:
+                with open(self.config_path, 'a'):
+                    pass
             except Exception as e:
-                result.is_available = False
-                result.import_error = f"检查异常: {str(e)}"
-            
-            results[dep_name] = result
+                permission_issues.append(('配置文件写权限', str(e)))
         
-        return results
+        # 检查日志目录权限
+        log_dir = Path('logs')
+        if log_dir.exists():
+            try:
+                test_log = log_dir / '.log_test'
+                test_log.write_text('test')
+                test_log.unlink()
+            except Exception as e:
+                permission_issues.append(('日志目录写权限', str(e)))
+        
+        if not permission_issues:
+            self.check_results['file_permissions'] = CheckResult(
+                name="文件权限",
+                status=CheckStatus.PASSED,
+                message="文件权限检查通过"
+            )
+        else:
+            self.check_results['file_permissions'] = CheckResult(
+                name="文件权限",
+                status=CheckStatus.WARNING,
+                message=f"发现{len(permission_issues)}个权限问题",
+                details={'permission_issues': permission_issues},
+                fix_suggestions=[
+                    "以管理员权限运行程序",
+                    "检查文件夹权限设置",
+                    "确保用户有读写权限"
+                ]
+            )
     
-    def _check_version_compatibility(self, installed_version: str, required_version: str) -> bool:
-        """检查版本兼容性"""
+    def _check_system_resources(self) -> None:
+        """检查系统资源"""
         try:
-            if required_version.startswith('>='):
-                required = required_version[2:].strip()
-                return self._compare_versions(installed_version, required) >= 0
-            elif required_version.startswith('<='):
-                required = required_version[2:].strip()
-                return self._compare_versions(installed_version, required) <= 0
-            elif required_version.startswith('>'):
-                required = required_version[1:].strip()
-                return self._compare_versions(installed_version, required) > 0
-            elif required_version.startswith('<'):
-                required = required_version[1:].strip()
-                return self._compare_versions(installed_version, required) < 0
-            elif required_version.startswith('=='):
-                required = required_version[2:].strip()
-                return self._compare_versions(installed_version, required) == 0
+            import psutil
+            
+            # 检查内存
+            memory = psutil.virtual_memory()
+            memory_gb = memory.total / (1024 ** 3)
+            
+            # 检查磁盘空间
+            disk = psutil.disk_usage('.')
+            disk_free_gb = disk.free / (1024 ** 3)
+            
+            # 检查CPU
+            cpu_count = psutil.cpu_count()
+            
+            warnings = []
+            if memory_gb < 2:
+                warnings.append(f"内存较少: {memory_gb:.1f}GB，建议4GB以上")
+            
+            if disk_free_gb < 1:
+                warnings.append(f"磁盘空间不足: {disk_free_gb:.1f}GB，建议至少1GB可用空间")
+            
+            if cpu_count < 2:
+                warnings.append(f"CPU核心数较少: {cpu_count}核")
+            
+            status = CheckStatus.WARNING if warnings else CheckStatus.PASSED
+            message = "系统资源检查通过" if not warnings else f"发现{len(warnings)}个资源警告"
+            
+            self.check_results['system_resources'] = CheckResult(
+                name="系统资源",
+                status=status,
+                message=message,
+                details={
+                    'memory_gb': round(memory_gb, 1),
+                    'disk_free_gb': round(disk_free_gb, 1),
+                    'cpu_count': cpu_count,
+                    'warnings': warnings
+                },
+                fix_suggestions=warnings if warnings else []
+            )
+            
+        except ImportError:
+            self.check_results['system_resources'] = CheckResult(
+                name="系统资源",
+                status=CheckStatus.SKIPPED,
+                message="缺少psutil模块，跳过系统资源检查",
+                fix_suggestions=["安装psutil模块: pip install psutil"]
+            )
+        except Exception as e:
+            self.check_results['system_resources'] = CheckResult(
+                name="系统资源",
+                status=CheckStatus.FAILED,
+                message=f"系统资源检查失败: {e}",
+                error=e
+            )
+    
+    def _check_network_connectivity(self) -> None:
+        """检查网络连接"""
+        try:
+            import requests
+            
+            # 测试基本网络连接
+            response = requests.get('https://www.google.com', timeout=5)
+            
+            if response.status_code == 200:
+                self.check_results['network_connectivity'] = CheckResult(
+                    name="网络连接",
+                    status=CheckStatus.PASSED,
+                    message="网络连接正常"
+                )
             else:
-                return self._compare_versions(installed_version, required_version) >= 0
-        except:
-            return True  # 如果版本比较失败，假设兼容
+                self.check_results['network_connectivity'] = CheckResult(
+                    name="网络连接",
+                    status=CheckStatus.WARNING,
+                    message=f"网络连接异常: HTTP {response.status_code}",
+                    fix_suggestions=["检查网络设置", "检查防火墙配置"]
+                )
+                
+        except ImportError:
+            self.check_results['network_connectivity'] = CheckResult(
+                name="网络连接",
+                status=CheckStatus.SKIPPED,
+                message="缺少requests模块，跳过网络检查"
+            )
+        except Exception as e:
+            self.check_results['network_connectivity'] = CheckResult(
+                name="网络连接",
+                status=CheckStatus.WARNING,
+                message=f"网络连接检查失败: {e}",
+                details={'error': str(e)},
+                fix_suggestions=[
+                    "检查网络连接",
+                    "检查DNS设置",
+                    "检查代理配置"
+                ]
+            )
     
-    def _compare_versions(self, version1: str, version2: str) -> int:
-        """比较版本号"""
-        def normalize_version(version):
-            return [int(x) for x in version.split('.')]
+    def _generate_summary(self) -> None:
+        """生成检查总结"""
+        total_checks = len(self.check_results)
+        passed_count = sum(1 for r in self.check_results.values() if r.status == CheckStatus.PASSED)
+        failed_count = sum(1 for r in self.check_results.values() if r.status == CheckStatus.FAILED)
+        warning_count = sum(1 for r in self.check_results.values() if r.status == CheckStatus.WARNING)
+        skipped_count = sum(1 for r in self.check_results.values() if r.status == CheckStatus.SKIPPED)
         
-        v1 = normalize_version(version1)
-        v2 = normalize_version(version2)
+        overall_status = CheckStatus.PASSED
+        if failed_count > 0:
+            overall_status = CheckStatus.FAILED
+        elif warning_count > 0:
+            overall_status = CheckStatus.WARNING
         
-        # 补齐长度
-        max_len = max(len(v1), len(v2))
-        v1.extend([0] * (max_len - len(v1)))
-        v2.extend([0] * (max_len - len(v2)))
-        
-        for i in range(max_len):
-            if v1[i] < v2[i]:
-                return -1
-            elif v1[i] > v2[i]:
-                return 1
-        
-        return 0
-    
-    def _check_project_structure(self) -> Dict[str, Any]:
-        """检查项目结构"""
-        required_dirs = [
-            'src', 'src/core', 'src/gui', 'src/config', 
-            'src/utils', 'src/models', 'logs', 'data'
-        ]
-        
-        required_files = [
-            'main.py', 'start.py', 'config.ini', 'requirements.txt',
-            'src/__init__.py', 'src/gui/__init__.py', 'src/core/__init__.py',
-            'src/config/__init__.py', 'src/utils/__init__.py', 'src/models/__init__.py'
-        ]
-        
-        results = {
-            'directories': {},
-            'files': {},
-            'missing_directories': [],
-            'missing_files': [],
-            'structure_valid': True
-        }
-        
-        # 检查目录
-        for dir_path in required_dirs:
-            full_path = self.project_root / dir_path
-            exists = full_path.exists() and full_path.is_dir()
-            results['directories'][dir_path] = exists
-            
-            if not exists:
-                results['missing_directories'].append(dir_path)
-                results['structure_valid'] = False
-        
-        # 检查文件
-        for file_path in required_files:
-            full_path = self.project_root / file_path
-            exists = full_path.exists() and full_path.is_file()
-            results['files'][file_path] = exists
-            
-            if not exists:
-                results['missing_files'].append(file_path)
-                results['structure_valid'] = False
-        
-        return results
-    
-    def _check_permissions(self) -> Dict[str, Any]:
-        """检查权限"""
-        results = {
-            'project_directory': {
-                'readable': False,
-                'writable': False,
-                'executable': False
-            },
-            'logs_directory': {
-                'readable': False,
-                'writable': False,
-                'executable': False
-            },
-            'data_directory': {
-                'readable': False,
-                'writable': False,
-                'executable': False
+        self.check_results['summary'] = CheckResult(
+            name="检查总结",
+            status=overall_status,
+            message=f"总计{total_checks}项检查: {passed_count}项通过, {failed_count}项失败, {warning_count}项警告, {skipped_count}项跳过",
+            details={
+                'total_checks': total_checks,
+                'passed_count': passed_count,
+                'failed_count': failed_count,
+                'warning_count': warning_count,
+                'skipped_count': skipped_count
             }
-        }
-        
-        # 检查项目目录权限
-        try:
-            results['project_directory']['readable'] = os.access(self.project_root, os.R_OK)
-            results['project_directory']['writable'] = os.access(self.project_root, os.W_OK)
-            results['project_directory']['executable'] = os.access(self.project_root, os.X_OK)
-        except:
-            pass
-        
-        # 检查logs目录权限
-        logs_dir = self.project_root / 'logs'
-        if logs_dir.exists():
-            try:
-                results['logs_directory']['readable'] = os.access(logs_dir, os.R_OK)
-                results['logs_directory']['writable'] = os.access(logs_dir, os.W_OK)
-                results['logs_directory']['executable'] = os.access(logs_dir, os.X_OK)
-            except:
-                pass
-        
-        # 检查data目录权限
-        data_dir = self.project_root / 'data'
-        if data_dir.exists():
-            try:
-                results['data_directory']['readable'] = os.access(data_dir, os.R_OK)
-                results['data_directory']['writable'] = os.access(data_dir, os.W_OK)
-                results['data_directory']['executable'] = os.access(data_dir, os.X_OK)
-            except:
-                pass
-        
-        return results
+        )
     
-    def _get_available_memory(self) -> int:
-        """获取可用内存（MB）"""
-        try:
-            import psutil
-            return int(psutil.virtual_memory().available / 1024 / 1024)
-        except:
-            return 0
+    def get_failed_checks(self) -> List[CheckResult]:
+        """获取失败的检查项"""
+        return [r for r in self.check_results.values() if r.status == CheckStatus.FAILED]
     
-    def _get_available_disk_space(self) -> int:
-        """获取可用磁盘空间（MB）"""
-        try:
-            import psutil
-            disk_usage = psutil.disk_usage(str(self.project_root))
-            return int(disk_usage.free / 1024 / 1024)
-        except:
-            return 0
+    def get_warning_checks(self) -> List[CheckResult]:
+        """获取警告的检查项"""
+        return [r for r in self.check_results.values() if r.status == CheckStatus.WARNING]
     
-    def _generate_summary(self, results: Dict[str, Any]) -> Dict[str, Any]:
-        """生成检查摘要"""
-        summary = {
-            'overall_status': 'PASS',
-            'issues_found': [],
-            'warnings': [],
-            'recommendations': [],
-            'critical_issues': 0,
-            'warning_issues': 0
-        }
+    def has_critical_failures(self) -> bool:
+        """是否有关键失败项"""
+        critical_checks = ['python_version', 'core_packages', 'third_party_packages']
+        for check_name in critical_checks:
+            if (check_name in self.check_results and 
+                self.check_results[check_name].status == CheckStatus.FAILED):
+                return True
+        return False
+    
+    def generate_report(self) -> str:
+        """生成详细的检查报告"""
+        lines = []
+        lines.append("=" * 60)
+        lines.append("系统依赖检查报告")
+        lines.append("=" * 60)
+        lines.append("")
         
-        # 检查系统要求
-        system_check = results['system_check']
-        if not system_check['python_version']['compatible']:
-            summary['issues_found'].append({
-                'type': 'CRITICAL',
-                'category': 'SYSTEM',
-                'message': system_check['python_version']['details'],
-                'fix': '请升级或降级Python到支持的版本'
-            })
-            summary['critical_issues'] += 1
-            summary['overall_status'] = 'FAIL'
+        # 总结
+        if 'summary' in self.check_results:
+            summary = self.check_results['summary']
+            lines.append(f"检查结果: {summary.message}")
+            lines.append("")
         
-        if not system_check['platform']['compatible']:
-            summary['warnings'].append({
-                'type': 'WARNING',
-                'category': 'SYSTEM',
-                'message': system_check['platform']['details'],
-                'fix': '当前平台可能存在兼容性问题'
-            })
-            summary['warning_issues'] += 1
-        
-        # 检查核心依赖
-        for dep_name, dep_info in results['core_dependencies'].items():
-            if not dep_info.is_available:
-                summary['issues_found'].append({
-                    'type': 'CRITICAL',
-                    'category': 'DEPENDENCY',
-                    'message': f'核心依赖 {dep_name} 缺失: {dep_info.import_error}',
-                    'fix': dep_info.install_command
-                })
-                summary['critical_issues'] += 1
-                summary['overall_status'] = 'FAIL'
-            elif not dep_info.is_version_compatible:
-                summary['warnings'].append({
-                    'type': 'WARNING',
-                    'category': 'DEPENDENCY',
-                    'message': f'依赖 {dep_name} 版本不兼容: 当前{dep_info.installed_version}，要求{dep_info.required_version}',
-                    'fix': dep_info.install_command
-                })
-                summary['warning_issues'] += 1
-        
-        # 检查项目结构
-        structure_check = results['project_structure']
-        if not structure_check['structure_valid']:
-            if structure_check['missing_directories']:
-                summary['issues_found'].append({
-                    'type': 'CRITICAL',
-                    'category': 'STRUCTURE',
-                    'message': f'缺少目录: {", ".join(structure_check["missing_directories"])}',
-                    'fix': '运行 python start.py 自动创建目录'
-                })
-                summary['critical_issues'] += 1
-                summary['overall_status'] = 'FAIL'
+        # 详细结果
+        for check_name, result in self.check_results.items():
+            if check_name == 'summary':
+                continue
+                
+            status_icon = {
+                CheckStatus.PASSED: "✓",
+                CheckStatus.FAILED: "✗",
+                CheckStatus.WARNING: "⚠",
+                CheckStatus.SKIPPED: "○"
+            }.get(result.status, "?")
             
-            if structure_check['missing_files']:
-                summary['issues_found'].append({
-                    'type': 'CRITICAL',
-                    'category': 'STRUCTURE',
-                    'message': f'缺少文件: {", ".join(structure_check["missing_files"])}',
-                    'fix': '请检查项目文件是否完整'
-                })
-                summary['critical_issues'] += 1
-                summary['overall_status'] = 'FAIL'
+            lines.append(f"{status_icon} {result.name}: {result.message}")
+            
+            if result.fix_suggestions:
+                lines.append("  修复建议:")
+                for suggestion in result.fix_suggestions:
+                    lines.append(f"    - {suggestion}")
+                lines.append("")
         
-        # 生成建议
-        if summary['critical_issues'] == 0 and summary['warning_issues'] == 0:
-            summary['recommendations'].append('✅ 所有检查通过，系统准备就绪')
-        else:
-            if summary['critical_issues'] > 0:
-                summary['recommendations'].append('🔴 发现关键问题，请先解决这些问题再启动应用')
-            if summary['warning_issues'] > 0:
-                summary['recommendations'].append('🟡 发现警告，建议修复以获得最佳体验')
-        
-        return summary
-    
-    def generate_fix_script(self, results: Dict[str, Any]) -> str:
-        """生成修复脚本"""
-        script_lines = [
-            "#!/usr/bin/env python3",
-            "# -*- coding: utf-8 -*-",
-            "# Android系统修复工具 - 自动修复脚本",
-            "",
-            "import subprocess",
-            "import sys",
-            "import os",
-            "",
-            "def run_command(command):",
-            "    \"\"\"执行命令\"\"\"",
-            "    try:",
-            "        result = subprocess.run(command, shell=True, capture_output=True, text=True)",
-            "        return result.returncode == 0, result.stdout, result.stderr",
-            "    except Exception as e:",
-            "        return False, '', str(e)",
-            "",
-            "def main():",
-            "    print('开始自动修复...')",
-            "    fixes_applied = 0",
-            "",
-        ]
-        
-        # 添加依赖安装命令
-        for dep_name, dep_info in results['core_dependencies'].items():
-            if not dep_info.is_available and dep_info.install_command.startswith('pip'):
-                script_lines.extend([
-                    f"    # 安装 {dep_name}",
-                    f"    print('正在安装 {dep_name}...')",
-                    f"    success, stdout, stderr = run_command('{dep_info.install_command}')",
-                    f"    if success:",
-                    f"        print('✅ {dep_name} 安装成功')",
-                    f"        fixes_applied += 1",
-                    f"    else:",
-                    f"        print('❌ {dep_name} 安装失败:', stderr)",
-                    "",
-                ])
-        
-        # 添加目录创建命令
-        structure_check = results['project_structure']
-        if structure_check['missing_directories']:
-            script_lines.extend([
-                "    # 创建缺失目录",
-                "    directories = " + str(structure_check['missing_directories']),
-                "    for directory in directories:",
-                "        try:",
-                "            os.makedirs(directory, exist_ok=True)",
-                "            print(f'✅ 创建目录: {directory}')",
-                "            fixes_applied += 1",
-                "        except Exception as e:",
-                "            print(f'❌ 创建目录失败 {directory}: {e}')",
-                "",
-            ])
-        
-        script_lines.extend([
-            "    print(f'修复完成，应用了 {fixes_applied} 个修复')",
-            "    if fixes_applied > 0:",
-            "        print('请重新运行依赖检查验证修复结果')",
-            "",
-            "if __name__ == '__main__':",
-            "    main()"
-        ])
-        
-        return '\n'.join(script_lines)
-    
-    def print_detailed_report(self, results: Dict[str, Any]):
-        """打印详细报告"""
-        print("=" * 80)
-        print("Android系统修复工具 - 依赖检查报告")
-        print("=" * 80)
-        
-        # 打印摘要
-        summary = results['summary']
-        print(f"\n📊 检查摘要:")
-        print(f"整体状态: {'✅ 通过' if summary['overall_status'] == 'PASS' else '❌ 失败'}")
-        print(f"关键问题: {summary['critical_issues']} 个")
-        print(f"警告问题: {summary['warning_issues']} 个")
-        
-        # 打印系统检查
-        print(f"\n🖥️ 系统检查:")
-        system_check = results['system_check']
-        print(f"Python版本: {'✅' if system_check['python_version']['compatible'] else '❌'} {system_check['python_version']['details']}")
-        print(f"操作系统: {'✅' if system_check['platform']['compatible'] else '⚠️'} {system_check['platform']['details']}")
-        print(f"内存检查: {'✅' if system_check['memory']['sufficient'] else '❌'} {system_check['memory']['details']}")
-        print(f"磁盘空间: {'✅' if system_check['disk_space']['sufficient'] else '❌'} {system_check['disk_space']['details']}")
-        
-        # 打印核心依赖
-        print(f"\n📦 核心依赖:")
-        for dep_name, dep_info in results['core_dependencies'].items():
-            status = "✅" if dep_info.is_available and dep_info.is_version_compatible else "❌"
-            version_text = f"({dep_info.installed_version})" if dep_info.installed_version else ""
-            print(f"{status} {dep_name} {version_text} - {dep_info.description}")
-            if not dep_info.is_available:
-                print(f"    错误: {dep_info.import_error}")
-                print(f"    修复: {dep_info.install_command}")
-        
-        # 打印可选依赖
-        print(f"\n🔧 可选依赖:")
-        for dep_name, dep_info in results['optional_dependencies'].items():
-            status = "✅" if dep_info.is_available else "⚠️"
-            version_text = f"({dep_info.installed_version})" if dep_info.installed_version else ""
-            print(f"{status} {dep_name} {version_text} - {dep_info.description}")
-        
-        # 打印项目结构
-        print(f"\n📁 项目结构:")
-        structure_check = results['project_structure']
-        if structure_check['structure_valid']:
-            print("✅ 项目结构完整")
-        else:
-            print("❌ 项目结构不完整")
-            if structure_check['missing_directories']:
-                print(f"    缺少目录: {', '.join(structure_check['missing_directories'])}")
-            if structure_check['missing_files']:
-                print(f"    缺少文件: {', '.join(structure_check['missing_files'])}")
-        
-        # 打印问题和建议
-        if summary['issues_found']:
-            print(f"\n🔴 发现的问题:")
-            for issue in summary['issues_found']:
-                print(f"  [{issue['type']}] {issue['message']}")
-                print(f"      修复方案: {issue['fix']}")
-        
-        if summary['warnings']:
-            print(f"\n🟡 警告:")
-            for warning in summary['warnings']:
-                print(f"  [{warning['type']}] {warning['message']}")
-                print(f"      建议: {warning['fix']}")
-        
-        print(f"\n💡 建议:")
-        for recommendation in summary['recommendations']:
-            print(f"  {recommendation}")
-        
-        print("=" * 80)
+        return "\n".join(lines)
 
-def main():
-    """主函数"""
+# 便捷函数
+def quick_check() -> bool:
+    """
+    快速检查，返回是否可以安全启动应用
+    
+    Returns:
+        True如果可以安全启动，False如果有关键问题
+    """
     checker = DependencyChecker()
-    results = checker.check_all_dependencies()
-    
-    # 打印详细报告
-    checker.print_detailed_report(results)
-    
-    # 如果有问题，生成修复脚本
-    if results['summary']['critical_issues'] > 0:
-        print("\n🔧 生成自动修复脚本...")
-        fix_script = checker.generate_fix_script(results)
-        
-        script_path = Path(__file__).parent.parent.parent / 'auto_fix.py'
-        with open(script_path, 'w', encoding='utf-8') as f:
-            f.write(fix_script)
-        
-        print(f"✅ 修复脚本已生成: {script_path}")
-        print("运行命令: python auto_fix.py")
-    
-    return results['summary']['overall_status'] == 'PASS'
+    results = checker.check_all()
+    return not checker.has_critical_failures()
 
-if __name__ == "__main__":
-    success = main()
-    sys.exit(0 if success else 1)
+def detailed_check() -> Dict[str, CheckResult]:
+    """
+    详细检查，返回完整的检查结果
+    
+    Returns:
+        检查结果字典
+    """
+    checker = DependencyChecker()
+    return checker.check_all()
+
+__all__ = ['DependencyChecker', 'CheckStatus', 'CheckResult', 'quick_check', 'detailed_check']
