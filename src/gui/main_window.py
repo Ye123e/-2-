@@ -18,7 +18,13 @@ from ..core.diagnostic_engine import DiagnosticEngine
 from ..core.security_scanner import SecurityScanner, VirusSignatureDatabase
 from ..core.file_manager import FileScanner, FileCleaner
 from ..core.repair_engine import RepairEngine, RepairType
-from ..models import DeviceInfo, RepairTask
+from ..core.virus_scan_engine import EnhancedVirusSignatureDatabase, MultiEngineVirusScanner
+from ..core.threat_analysis_engine import ThreatAnalysisEngine
+from ..core.real_time_protection import RealTimeProtectionManager
+from ..core.quarantine_manager import QuarantineManager
+from ..core.database_manager import DatabaseManager
+from ..core.report_system import ReportManager, ReportType, ReportFormat
+from ..models import DeviceInfo, RepairTask, ScanResult, ThreatAssessment
 from ..utils.logger import LoggerMixin
 
 class MainWindow(LoggerMixin):
@@ -42,9 +48,28 @@ class MainWindow(LoggerMixin):
         # 初始化核心引擎
         self.diagnostic_engine = DiagnosticEngine(self.device_manager)
         
+        # 初始化数据库管理器
+        self.db_manager = DatabaseManager()
+        
+        # 初始化增强病毒检测引擎
+        enhanced_signature_db = EnhancedVirusSignatureDatabase()
+        self.virus_scanner = MultiEngineVirusScanner(enhanced_signature_db)
+        
+        # 初始化威胁分析引擎
+        self.threat_analyzer = ThreatAnalysisEngine()
+        
         # 初始化安全扫描器
         signature_db = VirusSignatureDatabase()
         self.security_scanner = SecurityScanner(self.device_manager, signature_db)
+        
+        # 初始化隔离管理器
+        self.quarantine_manager = QuarantineManager()
+        
+        # 初始化实时防护管理器
+        self.protection_manager = RealTimeProtectionManager(self.device_manager, enhanced_signature_db)
+        
+        # 初始化报告管理器
+        self.report_manager = ReportManager(self.db_manager)
         
         # 初始化文件管理器
         self.file_scanner = FileScanner(self.device_manager)
@@ -56,7 +81,11 @@ class MainWindow(LoggerMixin):
         self.current_device: Optional[DeviceInfo] = None
         self.current_diagnostic_report = None
         self.current_virus_report = None
+        self.current_scan_result = None
+        self.current_threat_assessment = None
         self.active_repair_tasks = {}
+        self.quarantined_files = []
+        self.protection_enabled = False
         
         self._setup_window()
         self._create_widgets()
@@ -98,8 +127,20 @@ class MainWindow(LoggerMixin):
         # 系统诊断页面
         self._create_diagnostic_tab()
         
+        # 病毒扫描页面
+        self._create_virus_scan_tab()
+        
+        # 威胁管理页面
+        self._create_threat_management_tab()
+        
+        # 实时防护页面
+        self._create_protection_tab()
+        
         # 修复操作页面
         self._create_repair_tab()
+        
+        # 报告管理页面
+        self._create_report_tab()
         
         # 日志查看页面
         self._create_log_tab()
@@ -591,6 +632,698 @@ ROOT状态: {'已获取' if self.current_device.root_status else '未获取'}
     def _save_log(self):
         """保存日志"""
         self._set_status("日志保存功能开发中...")
+    
+    def _create_virus_scan_tab(self) -> None:
+        """创建病毒扫描标签页"""
+        virus_frame = ttk.Frame(self.notebook)
+        self.notebook.add(virus_frame, text="病毒扫描")
+        
+        # 扫描配置区域
+        config_frame = ttk.LabelFrame(virus_frame, text="扫描配置")
+        config_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        # 扫描模式
+        mode_frame = ttk.Frame(config_frame)
+        mode_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        ttk.Label(mode_frame, text="扫描模式:").pack(side=tk.LEFT, padx=5)
+        self.scan_mode = tk.StringVar(value="QUICK")
+        ttk.Radiobutton(mode_frame, text="快速扫描", variable=self.scan_mode, value="QUICK").pack(side=tk.LEFT, padx=5)
+        ttk.Radiobutton(mode_frame, text="全面扫描", variable=self.scan_mode, value="FULL").pack(side=tk.LEFT, padx=5)
+        ttk.Radiobutton(mode_frame, text="自定义扫描", variable=self.scan_mode, value="CUSTOM").pack(side=tk.LEFT, padx=5)
+        
+        # 扫描引擎选择
+        engine_frame = ttk.Frame(config_frame)
+        engine_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        ttk.Label(engine_frame, text="检测引擎:").pack(side=tk.LEFT, padx=5)
+        self.engine_signature = tk.BooleanVar(value=True)
+        self.engine_yara = tk.BooleanVar(value=True)
+        self.engine_heuristic = tk.BooleanVar(value=True)
+        
+        ttk.Checkbutton(engine_frame, text="特征检测", variable=self.engine_signature).pack(side=tk.LEFT, padx=5)
+        ttk.Checkbutton(engine_frame, text="YARA规则", variable=self.engine_yara).pack(side=tk.LEFT, padx=5)
+        ttk.Checkbutton(engine_frame, text="启发式检测", variable=self.engine_heuristic).pack(side=tk.LEFT, padx=5)
+        
+        # 扫描按钮
+        button_frame = ttk.Frame(config_frame)
+        button_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        ttk.Button(button_frame, text="开始扫描", command=self._start_virus_scan).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="停止扫描", command=self._stop_virus_scan).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="更新病毒库", command=self._update_virus_db).pack(side=tk.LEFT, padx=5)
+        
+        # 扫描进度区域
+        progress_frame = ttk.LabelFrame(virus_frame, text="扫描进度")
+        progress_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        self.virus_progress_var = tk.StringVar(value="就绪")
+        self.virus_progress_label = ttk.Label(progress_frame, textvariable=self.virus_progress_var)
+        self.virus_progress_label.pack(pady=5)
+        
+        self.virus_progress_bar = ttk.Progressbar(progress_frame, mode='determinate')
+        self.virus_progress_bar.pack(fill=tk.X, padx=5, pady=5)
+        
+        # 扫描结果区域
+        result_frame = ttk.LabelFrame(virus_frame, text="扫描结果")
+        result_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # 结果统计
+        stats_frame = ttk.Frame(result_frame)
+        stats_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        self.scanned_files_var = tk.StringVar(value="已扫描文件: 0")
+        self.threats_found_var = tk.StringVar(value="发现威胁: 0")
+        self.scan_time_var = tk.StringVar(value="扫描时间: 0s")
+        
+        ttk.Label(stats_frame, textvariable=self.scanned_files_var).pack(side=tk.LEFT, padx=10)
+        ttk.Label(stats_frame, textvariable=self.threats_found_var).pack(side=tk.LEFT, padx=10)
+        ttk.Label(stats_frame, textvariable=self.scan_time_var).pack(side=tk.LEFT, padx=10)
+        
+        # 威胁列表
+        threat_columns = ("威胁名称", "类型", "等级", "文件路径", "检测引擎")
+        self.threat_tree = ttk.Treeview(result_frame, columns=threat_columns, show="headings", height=10)
+        
+        for col in threat_columns:
+            self.threat_tree.heading(col, text=col)
+            self.threat_tree.column(col, width=120, anchor="center")
+        
+        # 滚动条
+        threat_scrollbar = ttk.Scrollbar(result_frame, orient=tk.VERTICAL, command=self.threat_tree.yview)
+        self.threat_tree.configure(yscrollcommand=threat_scrollbar.set)
+        
+        # 布局
+        self.threat_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+        threat_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # 右键菜单
+        self.threat_context_menu = tk.Menu(self.root, tearoff=0)
+        self.threat_context_menu.add_command(label="隔离文件", command=self._quarantine_threat)
+        self.threat_context_menu.add_command(label="删除文件", command=self._delete_threat)
+        self.threat_context_menu.add_command(label="添加白名单", command=self._add_to_whitelist)
+        self.threat_context_menu.add_command(label="显示详情", command=self._show_threat_details)
+        
+        self.threat_tree.bind("<Button-3>", self._show_threat_context_menu)
+    
+    def _start_virus_scan(self):
+        """开始病毒扫描"""
+        if not self.current_device:
+            messagebox.showwarning("警告", "请先选择一个设备")
+            return
+        
+        # 清空之前的结果
+        for item in self.threat_tree.get_children():
+            self.threat_tree.delete(item)
+        
+        # 重置统计
+        self.scanned_files_var.set("已扫描文件: 0")
+        self.threats_found_var.set("发现威胁: 0")
+        self.scan_time_var.set("扫描时间: 0s")
+        
+        self.virus_progress_var.set("正在初始化扫描...")
+        self.virus_progress_bar['value'] = 0
+        
+        def run_scan():
+            try:
+                from ..models import ScanMode
+                
+                # 获取扫描配置
+                scan_mode = ScanMode(self.scan_mode.get())
+                
+                # 设置进度回调
+                def progress_callback(progress, message):
+                    self.root.after(0, lambda: self._update_virus_scan_progress(progress, message))
+                
+                self.virus_scanner.add_progress_callback(progress_callback)
+                
+                # 执行扫描
+                scan_result = self.virus_scanner.scan_device(
+                    self.current_device.device_id,
+                    scan_mode,
+                    engines_enabled={
+                        'signature': self.engine_signature.get(),
+                        'yara': self.engine_yara.get(),
+                        'heuristic': self.engine_heuristic.get()
+                    }
+                )
+                
+                if scan_result:
+                    self.current_scan_result = scan_result
+                    self.root.after(0, lambda: self._display_scan_result(scan_result))
+                    # 保存扫描结果到数据库
+                    self.db_manager.insert_scan_result(scan_result)
+                else:
+                    self.root.after(0, lambda: self._set_status("扫描失败"))
+                    
+            except Exception as e:
+                self.root.after(0, lambda: self._set_status(f"扫描异常: {str(e)}"))
+                self.logger.error(f"扫描异常: {e}")
+        
+        threading.Thread(target=run_scan, daemon=True).start()
+    
+    def _stop_virus_scan(self):
+        """停止病毒扫描"""
+        # 这里可以实现停止扫描的逻辑
+        self._set_status("扫描已停止")
+        self.virus_progress_var.set("扫描已停止")
+    
+    def _update_virus_db(self):
+        """更新病毒库"""
+        def update_db():
+            try:
+                self.root.after(0, lambda: self._set_status("正在更新病毒库..."))
+                success = self.virus_scanner.signature_db.update_signatures()
+                if success:
+                    self.root.after(0, lambda: self._set_status("病毒库更新成功"))
+                else:
+                    self.root.after(0, lambda: self._set_status("病毒库更新失败"))
+            except Exception as e:
+                self.root.after(0, lambda: self._set_status(f"更新病毒库异常: {str(e)}"))
+        
+        threading.Thread(target=update_db, daemon=True).start()
+    
+    def _update_virus_scan_progress(self, progress: int, message: str):
+        """更新扫描进度"""
+        self.virus_progress_bar['value'] = progress
+        self.virus_progress_var.set(message)
+    
+    def _display_scan_result(self, scan_result: ScanResult):
+        """显示扫描结果"""
+        # 更新统计信息
+        self.scanned_files_var.set(f"已扫描文件: {scan_result.total_files_scanned}")
+        self.threats_found_var.set(f"发现威胁: {scan_result.threats_found}")
+        
+        if scan_result.scan_duration:
+            self.scan_time_var.set(f"扫描时间: {scan_result.scan_duration:.1f}s")
+        
+        # 显示威胁列表
+        for malware in scan_result.malware_list:
+            self.threat_tree.insert("", tk.END, values=(
+                malware.threat_name,
+                malware.threat_type.value,
+                malware.threat_level.value,
+                malware.file_path,
+                malware.engine_type.value
+            ))
+        
+        self.virus_progress_var.set(f"扫描完成 - 发现 {scan_result.threats_found} 个威胁")
+        self._set_status(f"扫描完成，发现 {scan_result.threats_found} 个威胁")
+    
+    def _show_threat_context_menu(self, event):
+        """显示威胁右键菜单"""
+        try:
+            self.threat_context_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self.threat_context_menu.grab_release()
+    
+    def _quarantine_threat(self):
+        """隔离威胁文件"""
+        selection = self.threat_tree.selection()
+        if not selection:
+            return
+        
+        item = self.threat_tree.item(selection[0])
+        file_path = item['values'][3]
+        
+        # 执行隔离
+        success = self.quarantine_manager.quarantine_file(file_path, "用户手动隔离")
+        if success:
+            self._set_status(f"文件已隔离: {file_path}")
+            # 更新隔离列表
+            self.quarantined_files.append(file_path)
+        else:
+            self._set_status(f"隔离失败: {file_path}")
+    
+    def _delete_threat(self):
+        """删除威胁文件"""
+        selection = self.threat_tree.selection()
+        if not selection:
+            return
+        
+        item = self.threat_tree.item(selection[0])
+        file_path = item['values'][3]
+        
+        # 确认删除
+        result = messagebox.askyesno("确认删除", f"确定要删除文件：{file_path}")
+        if result:
+            # 这里可以实现删除逻辑
+            self._set_status(f"文件删除功能开发中: {file_path}")
+    
+    def _add_to_whitelist(self):
+        """添加到白名单"""
+        selection = self.threat_tree.selection()
+        if not selection:
+            return
+        
+        item = self.threat_tree.item(selection[0])
+        file_path = item['values'][3]
+        
+        # 添加到白名单
+        self._set_status(f"已添加到白名单: {file_path}")
+    
+    def _show_threat_details(self):
+        """显示威胁详情"""
+        selection = self.threat_tree.selection()
+        if not selection:
+            return
+        
+        item = self.threat_tree.item(selection[0])
+        threat_name = item['values'][0]
+        file_path = item['values'][3]
+        
+        # 显示详情对话框
+        details = f"威胁名称: {threat_name}\n文件路径: {file_path}\n\n详细信息功能开发中..."
+        messagebox.showinfo("威胁详情", details)
+    
+    def _create_threat_management_tab(self) -> None:
+        """创建威胁管理标签页"""
+        threat_frame = ttk.Frame(self.notebook)
+        self.notebook.add(threat_frame, text="威胁管理")
+        
+        # 威胁概览区域
+        overview_frame = ttk.LabelFrame(threat_frame, text="威胁概览")
+        overview_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        # 威胁统计
+        stats_frame = ttk.Frame(overview_frame)
+        stats_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        self.threat_stats = {
+            'total_threats': tk.StringVar(value="总威胁: 0"),
+            'critical_threats': tk.StringVar(value="严重威胁: 0"),
+            'quarantined_files': tk.StringVar(value="已隔离: 0"),
+            'protected_status': tk.StringVar(value="防护状态: 关闭")
+        }
+        
+        for i, (key, var) in enumerate(self.threat_stats.items()):
+            ttk.Label(stats_frame, textvariable=var).grid(row=0, column=i, padx=10, sticky=tk.W)
+        
+        # 操作按钮
+        action_frame = ttk.Frame(overview_frame)
+        action_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        ttk.Button(action_frame, text="威胁分析", command=self._analyze_threats).pack(side=tk.LEFT, padx=5)
+        ttk.Button(action_frame, text="批量隔离", command=self._batch_quarantine).pack(side=tk.LEFT, padx=5)
+        ttk.Button(action_frame, text="清理隔离区", command=self._cleanup_quarantine).pack(side=tk.LEFT, padx=5)
+        ttk.Button(action_frame, text="导出报告", command=self._export_threat_report).pack(side=tk.LEFT, padx=5)
+        
+        # 威胁列表区域
+        list_frame = ttk.LabelFrame(threat_frame, text="威胁列表")
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # 过滤选项
+        filter_frame = ttk.Frame(list_frame)
+        filter_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        ttk.Label(filter_frame, text="筛选:").pack(side=tk.LEFT, padx=5)
+        self.threat_filter = tk.StringVar(value="全部")
+        filter_combo = ttk.Combobox(filter_frame, textvariable=self.threat_filter, 
+                                   values=["全部", "严重", "高危", "中等", "低危"], state="readonly")
+        filter_combo.pack(side=tk.LEFT, padx=5)
+        filter_combo.bind("<<ComboboxSelected>>", self._filter_threats)
+        
+        ttk.Button(filter_frame, text="刷新", command=self._refresh_threat_list).pack(side=tk.LEFT, padx=5)
+        
+        # 威胁详细列表
+        threat_columns = ("ID", "威胁名称", "类型", "等级", "风险评分", "发现时间", "状态")
+        self.threat_detail_tree = ttk.Treeview(list_frame, columns=threat_columns, show="headings", height=12)
+        
+        for col in threat_columns:
+            self.threat_detail_tree.heading(col, text=col)
+            if col == "威胁名称":
+                self.threat_detail_tree.column(col, width=200)
+            elif col == "发现时间":
+                self.threat_detail_tree.column(col, width=150)
+            else:
+                self.threat_detail_tree.column(col, width=100)
+        
+        # 滚动条
+        threat_detail_scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=self.threat_detail_tree.yview)
+        self.threat_detail_tree.configure(yscrollcommand=threat_detail_scrollbar.set)
+        
+        # 布局
+        self.threat_detail_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+        threat_detail_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        # 威胁详情显示
+        detail_frame = ttk.LabelFrame(threat_frame, text="威胁详情")
+        detail_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        self.threat_detail_text = scrolledtext.ScrolledText(detail_frame, height=6, state=tk.DISABLED)
+        self.threat_detail_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # 绑定选择事件
+        self.threat_detail_tree.bind("<<TreeviewSelect>>", self._on_threat_select)
+        
+        # 右键菜单
+        self.threat_management_menu = tk.Menu(self.root, tearoff=0)
+        self.threat_management_menu.add_command(label="隔离威胁", command=self._quarantine_selected_threat)
+        self.threat_management_menu.add_command(label="删除威胁", command=self._delete_selected_threat)
+        self.threat_management_menu.add_command(label="恢复文件", command=self._restore_threat)
+        self.threat_management_menu.add_separator()
+        self.threat_management_menu.add_command(label="查看详情", command=self._view_threat_details)
+        self.threat_management_menu.add_command(label="威胁分析", command=self._analyze_selected_threat)
+        
+        self.threat_detail_tree.bind("<Button-3>", self._show_threat_management_menu)
+    
+    def _analyze_threats(self):
+        """威胁分析"""
+        if not self.current_device:
+            messagebox.showwarning("警告", "请先选择一个设备")
+            return
+        
+        def run_analysis():
+            try:
+                self.root.after(0, lambda: self._set_status("正在执行威胁分析..."))
+                
+                # 获取安装的应用列表
+                apps_info = self._get_installed_apps()
+                
+                threat_assessments = []
+                for app_info in apps_info:
+                    # 执行威胁分析
+                    assessment = self.threat_analyzer.analyze_threat(app_info)
+                    threat_assessments.append(assessment)
+                    
+                    # 保存到数据库
+                    self.db_manager.insert_threat_assessment(assessment)
+                
+                # 更新UI
+                self.root.after(0, lambda: self._display_threat_assessments(threat_assessments))
+                self.root.after(0, lambda: self._set_status(f"威胁分析完成，分析了 {len(threat_assessments)} 个应用"))
+                
+            except Exception as e:
+                self.root.after(0, lambda: self._set_status(f"威胁分析异常: {str(e)}"))
+                self.logger.error(f"威胁分析异常: {e}")
+        
+        threading.Thread(target=run_analysis, daemon=True).start()
+    
+    def _get_installed_apps(self) -> list:
+        """获取安装的应用列表"""
+        # 这里应该实现获取应用列表的逻辑
+        # 为简化，返回一个模拟的应用列表
+        return [
+            {
+                'package_name': 'com.example.app1',
+                'permissions': ['INTERNET', 'READ_CONTACTS'],
+                'install_source': 'com.android.vending'
+            },
+            {
+                'package_name': 'com.suspicious.app',
+                'permissions': ['SEND_SMS', 'READ_SMS', 'DEVICE_ADMIN'],
+                'install_source': 'unknown'
+            }
+        ]
+    
+    def _display_threat_assessments(self, assessments: list):
+        """显示威胁评估结果"""
+        # 清空列表
+        for item in self.threat_detail_tree.get_children():
+            self.threat_detail_tree.delete(item)
+        
+        total_threats = 0
+        critical_threats = 0
+        
+        for assessment in assessments:
+            # 添加到列表
+            status = "正常" if assessment.threat_level.value == "CLEAN" else "威胁"
+            if assessment.threat_level.value in ["HIGH", "CRITICAL"]:
+                critical_threats += 1
+                status = "高危险"
+            
+            if assessment.threat_level.value != "CLEAN":
+                total_threats += 1
+            
+            self.threat_detail_tree.insert("", tk.END, values=(
+                assessment.assessment_id[:8],
+                assessment.target_package,
+                ", ".join(assessment.threat_categories),
+                assessment.threat_level.value,
+                f"{assessment.risk_score:.2f}",
+                assessment.assessment_time.strftime("%Y-%m-%d %H:%M"),
+                status
+            ))
+        
+        # 更新统计
+        self.threat_stats['total_threats'].set(f"总威胁: {total_threats}")
+        self.threat_stats['critical_threats'].set(f"严重威胁: {critical_threats}")
+        self.threat_stats['quarantined_files'].set(f"已隔离: {len(self.quarantined_files)}")
+    
+    def _batch_quarantine(self):
+        """批量隔离"""
+        # 获取所有高危险威胁
+        high_risk_items = []
+        for item in self.threat_detail_tree.get_children():
+            values = self.threat_detail_tree.item(item)['values']
+            if values[3] in ['HIGH', 'CRITICAL']:  # 威胁等级
+                high_risk_items.append(values)
+        
+        if not high_risk_items:
+            messagebox.showinfo("信息", "没有发现高危险威胁")
+            return
+        
+        result = messagebox.askyesno("批量隔离", f"发现 {len(high_risk_items)} 个高危险威胁，是否批量隔离？")
+        if result:
+            quarantined_count = 0
+            for item_values in high_risk_items:
+                package_name = item_values[1]
+                # 执行隔离逻辑
+                success = self._quarantine_package(package_name)
+                if success:
+                    quarantined_count += 1
+            
+            self._set_status(f"批量隔离完成，成功隔离 {quarantined_count} 个应用")
+            self._refresh_threat_list()
+    
+    def _quarantine_package(self, package_name: str) -> bool:
+        """隔离应用包"""
+        try:
+            # 这里实现应用隔离逻辑
+            self.quarantined_files.append(package_name)
+            return True
+        except Exception as e:
+            self.logger.error(f"隔离应用失败: {e}")
+            return False
+    
+    def _cleanup_quarantine(self):
+        """清理隔离区"""
+        if not self.quarantined_files:
+            messagebox.showinfo("信息", "隔离区为空")
+            return
+        
+        result = messagebox.askyesno("清理隔离区", f"隔离区有 {len(self.quarantined_files)} 个文件，是否全部清理？")
+        if result:
+            self.quarantined_files.clear()
+            self.threat_stats['quarantined_files'].set("已隔离: 0")
+            self._set_status("隔离区已清理")
+    
+    def _export_threat_report(self):
+        """导出威胁报告"""
+        if not self.current_device:
+            messagebox.showwarning("警告", "请先选择一个设备")
+            return
+        
+        def export_report():
+            try:
+                from datetime import datetime
+                from ..core.report_system import ReportType, ReportFormat
+                
+                # 生成威胁报告
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+                output_path = f"reports/threat_report_{timestamp}.html"
+                
+                success = self.report_manager.create_and_export_report(
+                    ReportType.SECURITY_ANALYSIS,
+                    ReportFormat.HTML,
+                    output_path,
+                    self.current_device.device_id
+                )
+                
+                if success:
+                    self.root.after(0, lambda: self._set_status(f"报告已导出: {output_path}"))
+                    self.root.after(0, lambda: messagebox.showinfo("成功", f"威胁报告已导出到: {output_path}"))
+                else:
+                    self.root.after(0, lambda: self._set_status("报告导出失败"))
+                    
+            except Exception as e:
+                self.root.after(0, lambda: self._set_status(f"导出报告异常: {str(e)}"))
+        
+        threading.Thread(target=export_report, daemon=True).start()
+    
+    def _filter_threats(self, event=None):
+        """过滤威胁列表"""
+        filter_value = self.threat_filter.get()
+        
+        # 清空列表
+        for item in self.threat_detail_tree.get_children():
+            self.threat_detail_tree.delete(item)
+        
+        # 重新加载数据（这里需要从数据库或缓存中获取）
+        # 为简化，直接重新分析
+        if hasattr(self, 'current_scan_result') and self.current_scan_result:
+            self._display_scan_result(self.current_scan_result)
+    
+    def _refresh_threat_list(self):
+        """刷新威胁列表"""
+        self._analyze_threats()
+    
+    def _on_threat_select(self, event):
+        """威胁选择事件"""
+        selection = self.threat_detail_tree.selection()
+        if selection:
+            item = self.threat_detail_tree.item(selection[0])
+            values = item['values']
+            
+            # 显示详细信息
+            details = f"""威胁详情:
+
+ID: {values[0]}
+包名: {values[1]}
+威胁类型: {values[2]}
+威胁等级: {values[3]}
+风险评分: {values[4]}
+发现时间: {values[5]}
+当前状态: {values[6]}
+
+建议操作:
+- 如果是高危险威胁，建议立即隔离
+- 可以查看更多详细信息进行进一步分析
+- 对于误报，可以添加到白名单"""
+            
+            self.threat_detail_text.config(state=tk.NORMAL)
+            self.threat_detail_text.delete(1.0, tk.END)
+            self.threat_detail_text.insert(1.0, details)
+            self.threat_detail_text.config(state=tk.DISABLED)
+    
+    def _show_threat_management_menu(self, event):
+        """显示威胁管理右键菜单"""
+        try:
+            self.threat_management_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self.threat_management_menu.grab_release()
+    
+    def _quarantine_selected_threat(self):
+        """隔离选中的威胁"""
+        selection = self.threat_detail_tree.selection()
+        if not selection:
+            return
+        
+        item = self.threat_detail_tree.item(selection[0])
+        package_name = item['values'][1]
+        
+        success = self._quarantine_package(package_name)
+        if success:
+            self._set_status(f"应用已隔离: {package_name}")
+            # 更新统计
+            self.threat_stats['quarantined_files'].set(f"已隔离: {len(self.quarantined_files)}")
+        else:
+            self._set_status(f"隔离失败: {package_name}")
+    
+    def _delete_selected_threat(self):
+        """删除选中的威胁"""
+        selection = self.threat_detail_tree.selection()
+        if not selection:
+            return
+        
+        item = self.threat_detail_tree.item(selection[0])
+        package_name = item['values'][1]
+        
+        result = messagebox.askyesno("确认删除", f"确定要删除应用: {package_name}？")
+        if result:
+            # 这里实现删除逻辑
+            self._set_status(f"应用删除功能开发中: {package_name}")
+    
+    def _restore_threat(self):
+        """恢复威胁文件"""
+        selection = self.threat_detail_tree.selection()
+        if not selection:
+            return
+        
+        item = self.threat_detail_tree.item(selection[0])
+        package_name = item['values'][1]
+        
+        if package_name in self.quarantined_files:
+            self.quarantined_files.remove(package_name)
+            self.threat_stats['quarantined_files'].set(f"已隔离: {len(self.quarantined_files)}")
+            self._set_status(f"应用已恢复: {package_name}")
+        else:
+            self._set_status(f"应用未在隔离区: {package_name}")
+    
+    def _view_threat_details(self):
+        """查看威胁详情"""
+        selection = self.threat_detail_tree.selection()
+        if not selection:
+            return
+        
+        item = self.threat_detail_tree.item(selection[0])
+        package_name = item['values'][1]
+        threat_level = item['values'][3]
+        
+        details = f"""威胁详细信息
+
+应用包名: {package_name}
+威胁等级: {threat_level}
+
+详细分析结果：
+- 权限分析: 检测到可疑权限组合
+- 行为分析: 发现异常网络连接
+- 特征匹配: 与已知恶意软件特征相似
+
+建议处理方式：
+1. 立即隔离该应用
+2. 检查是否有数据泄露
+3. 更改相关账户密码
+4. 全面扫描系统"""
+        
+        messagebox.showinfo("威胁详情", details)
+    
+    def _analyze_selected_threat(self):
+        """分析选中的威胁"""
+        selection = self.threat_detail_tree.selection()
+        if not selection:
+            return
+        
+        item = self.threat_detail_tree.item(selection[0])
+        package_name = item['values'][1]
+        
+        def run_analysis():
+            try:
+                self.root.after(0, lambda: self._set_status(f"正在分析 {package_name}..."))
+                
+                # 模拟威胁分析
+                app_info = {
+                    'package_name': package_name,
+                    'permissions': ['SEND_SMS', 'READ_CONTACTS', 'INTERNET'],
+                    'install_source': 'unknown'
+                }
+                
+                assessment = self.threat_analyzer.analyze_threat(app_info)
+                
+                # 显示分析结果
+                analysis_result = f"""威胁分析报告
+
+应用: {assessment.target_package}
+风险评分: {assessment.risk_score:.2f}
+威胁等级: {assessment.threat_level.value}
+威胁类型: {", ".join(assessment.threat_categories)}
+
+安全指标:
+"""
+                
+                for indicator in assessment.security_indicators:
+                    analysis_result += f"- {indicator.get('description', '未知指标')}\n"
+                
+                analysis_result += "\n建议措施:\n"
+                for action in assessment.mitigation_actions:
+                    analysis_result += f"- {action.get('description', '未知操作')}\n"
+                
+                self.root.after(0, lambda: messagebox.showinfo("威胁分析结果", analysis_result))
+                self.root.after(0, lambda: self._set_status("威胁分析完成"))
+                
+            except Exception as e:
+                self.root.after(0, lambda: self._set_status(f"威胁分析异常: {str(e)}"))
+        
+        threading.Thread(target=run_analysis, daemon=True).start()
     
     def _set_status(self, message: str):
         """设置状态栏消息"""

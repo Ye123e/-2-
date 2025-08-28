@@ -547,10 +547,15 @@ __all__ = [
     'ScanMode', 'RepairAction',
     # 数据模型类
     'DeviceInfo', 'Issue', 'VirusReport', 'ResourceReport', 
-    'DiagnosticReport', 'RepairTask',
+    'DiagnosticReport', 'RepairTask', 'FileChecksum',
     # 威胁检测相关模型
     'MalwareInfo', 'VulnerabilityInfo', 'ThreatIntelligence',
-    'ScanResult', 'RepairPlan', 'RepairItem'
+    'ScanResult', 'RepairPlan', 'RepairItem',
+    # 安全事件与防护模型
+    'SecurityEvent', 'ThreatAssessment', 'QuarantineRecord',
+    'BackupRecord', 'PatchInfo', 'ProtectionRule',
+    # 系统管理模型
+    'ScanProfile', 'SystemReport'
 ]
         self.add_log("任务开始执行")
     
@@ -576,3 +581,271 @@ class FileChecksum:
     sha256: str = ""
     size: int = 0
     last_modified: Optional[datetime] = None
+
+
+@dataclass
+class SecurityEvent:
+    """安全事件数据模型"""
+    event_id: str
+    event_type: str  # FILE_CREATED, PROCESS_STARTED, etc.
+    timestamp: datetime
+    device_id: str
+    source: str  # 文件路径、进程名等
+    threat_level: ThreatLevel
+    action_taken: Optional[str] = None
+    description: str = ""
+    details: Dict[str, Any] = field(default_factory=dict)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典格式"""
+        return {
+            'event_id': self.event_id,
+            'event_type': self.event_type,
+            'timestamp': self.timestamp.isoformat(),
+            'device_id': self.device_id,
+            'source': self.source,
+            'threat_level': self.threat_level.value,
+            'action_taken': self.action_taken,
+            'description': self.description,
+            'details': self.details
+        }
+
+
+@dataclass
+class ThreatAssessment:
+    """威胁评估数据模型"""
+    assessment_id: str
+    target_package: str
+    risk_score: float
+    threat_level: ThreatLevel
+    threat_categories: List[str] = field(default_factory=list)
+    security_indicators: List[Dict[str, Any]] = field(default_factory=list)
+    mitigation_actions: List[Dict[str, Any]] = field(default_factory=list)
+    assessment_time: datetime = field(default_factory=datetime.now)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典格式"""
+        return {
+            'assessment_id': self.assessment_id,
+            'target_package': self.target_package,
+            'risk_score': self.risk_score,
+            'threat_level': self.threat_level.value,
+            'threat_categories': self.threat_categories,
+            'security_indicators': self.security_indicators,
+            'mitigation_actions': self.mitigation_actions,
+            'assessment_time': self.assessment_time.isoformat(),
+            'metadata': self.metadata
+        }
+
+
+@dataclass
+class QuarantineRecord:
+    """隔离记录数据模型"""
+    record_id: str
+    file_path: str
+    quarantine_path: str
+    quarantine_time: datetime
+    threat_info: MalwareInfo
+    quarantine_reason: str
+    file_hash: str = ""
+    file_size: int = 0
+    restoration_available: bool = True
+    status: str = "active"  # active, restored, deleted
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典格式"""
+        return {
+            'record_id': self.record_id,
+            'file_path': self.file_path,
+            'quarantine_path': self.quarantine_path,
+            'quarantine_time': self.quarantine_time.isoformat(),
+            'threat_info': self.threat_info.to_dict(),
+            'quarantine_reason': self.quarantine_reason,
+            'file_hash': self.file_hash,
+            'file_size': self.file_size,
+            'restoration_available': self.restoration_available,
+            'status': self.status,
+            'metadata': self.metadata
+        }
+
+
+@dataclass
+class BackupRecord:
+    """备份记录数据模型"""
+    backup_id: str
+    device_id: str
+    backup_type: str  # full, incremental, snapshot
+    backup_path: str
+    creation_time: datetime
+    backup_size: int = 0
+    checksum: str = ""
+    description: str = ""
+    restore_commands: List[str] = field(default_factory=list)
+    expiry_date: Optional[datetime] = None
+    status: str = "active"  # active, expired, corrupted
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典格式"""
+        return {
+            'backup_id': self.backup_id,
+            'device_id': self.device_id,
+            'backup_type': self.backup_type,
+            'backup_path': self.backup_path,
+            'creation_time': self.creation_time.isoformat(),
+            'backup_size': self.backup_size,
+            'checksum': self.checksum,
+            'description': self.description,
+            'restore_commands': self.restore_commands,
+            'expiry_date': self.expiry_date.isoformat() if self.expiry_date else None,
+            'status': self.status,
+            'metadata': self.metadata
+        }
+
+
+@dataclass
+class PatchInfo:
+    """补丁信息数据模型"""
+    patch_id: str
+    name: str
+    version: str
+    patch_type: str  # SECURITY, SYSTEM, APPLICATION, FIRMWARE
+    description: str
+    severity: str  # LOW, MEDIUM, HIGH, CRITICAL
+    size: int
+    download_url: str
+    checksum: str
+    dependencies: List[str] = field(default_factory=list)
+    status: str = "AVAILABLE"
+    install_date: Optional[datetime] = None
+    backup_path: Optional[str] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典格式"""
+        return {
+            'patch_id': self.patch_id,
+            'name': self.name,
+            'version': self.version,
+            'patch_type': self.patch_type,
+            'description': self.description,
+            'severity': self.severity,
+            'size': self.size,
+            'download_url': self.download_url,
+            'checksum': self.checksum,
+            'dependencies': self.dependencies,
+            'status': self.status,
+            'install_date': self.install_date.isoformat() if self.install_date else None,
+            'backup_path': self.backup_path,
+            'metadata': self.metadata
+        }
+
+
+@dataclass
+class ProtectionRule:
+    """保护规则数据模型"""
+    rule_id: str
+    name: str
+    description: str
+    rule_type: str  # WHITELIST, BLACKLIST, BEHAVIOR, etc.
+    event_types: List[str]
+    conditions: List[Dict[str, Any]] = field(default_factory=list)
+    actions: List[Dict[str, Any]] = field(default_factory=list)
+    enabled: bool = True
+    priority: int = 50
+    created_time: datetime = field(default_factory=datetime.now)
+    modified_time: datetime = field(default_factory=datetime.now)
+    execution_count: int = 0
+    last_execution: Optional[datetime] = None
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典格式"""
+        return {
+            'rule_id': self.rule_id,
+            'name': self.name,
+            'description': self.description,
+            'rule_type': self.rule_type,
+            'event_types': self.event_types,
+            'conditions': self.conditions,
+            'actions': self.actions,
+            'enabled': self.enabled,
+            'priority': self.priority,
+            'created_time': self.created_time.isoformat(),
+            'modified_time': self.modified_time.isoformat(),
+            'execution_count': self.execution_count,
+            'last_execution': self.last_execution.isoformat() if self.last_execution else None,
+            'metadata': self.metadata
+        }
+
+
+@dataclass
+class ScanProfile:
+    """扫描配置文件数据模型"""
+    profile_id: str
+    name: str
+    scan_mode: ScanMode
+    scan_paths: List[str] = field(default_factory=list)
+    excluded_paths: List[str] = field(default_factory=list)
+    excluded_extensions: List[str] = field(default_factory=list)
+    engines_enabled: List[str] = field(default_factory=list)
+    max_file_size: int = 100 * 1024 * 1024  # 100MB
+    scan_archives: bool = True
+    scan_encrypted: bool = False
+    realtime_protection: bool = False
+    schedule_enabled: bool = False
+    schedule_cron: str = ""
+    created_time: datetime = field(default_factory=datetime.now)
+    modified_time: datetime = field(default_factory=datetime.now)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典格式"""
+        return {
+            'profile_id': self.profile_id,
+            'name': self.name,
+            'scan_mode': self.scan_mode.value,
+            'scan_paths': self.scan_paths,
+            'excluded_paths': self.excluded_paths,
+            'excluded_extensions': self.excluded_extensions,
+            'engines_enabled': self.engines_enabled,
+            'max_file_size': self.max_file_size,
+            'scan_archives': self.scan_archives,
+            'scan_encrypted': self.scan_encrypted,
+            'realtime_protection': self.realtime_protection,
+            'schedule_enabled': self.schedule_enabled,
+            'schedule_cron': self.schedule_cron,
+            'created_time': self.created_time.isoformat(),
+            'modified_time': self.modified_time.isoformat(),
+            'metadata': self.metadata
+        }
+
+
+@dataclass
+class SystemReport:
+    """系统报告数据模型"""
+    report_id: str
+    device_id: str
+    report_type: str  # scan_report, security_report, performance_report
+    generation_time: datetime
+    data: Dict[str, Any] = field(default_factory=dict)
+    summary: str = ""
+    recommendations: List[str] = field(default_factory=list)
+    export_formats: List[str] = field(default_factory=list)  # pdf, html, json, csv
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """转换为字典格式"""
+        return {
+            'report_id': self.report_id,
+            'device_id': self.device_id,
+            'report_type': self.report_type,
+            'generation_time': self.generation_time.isoformat(),
+            'data': self.data,
+            'summary': self.summary,
+            'recommendations': self.recommendations,
+            'export_formats': self.export_formats,
+            'metadata': self.metadata
+        }
