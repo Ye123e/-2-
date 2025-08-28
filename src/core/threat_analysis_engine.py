@@ -232,3 +232,63 @@ class ThreatAnalysisEngine:
                 ))
         
         return actions
+
+
+class NetworkBehaviorAnalyzer:
+    """网络行为分析器"""
+    
+    def __init__(self):
+        self.suspicious_domains = [
+            'malware-c2.com', 'evil-server.net', 'trojan-control.org',
+            'phishing-site.com', 'fake-bank.net'
+        ]
+        self.suspicious_ips = ['192.168.1.100', '10.0.0.50']
+    
+    def analyze_network_connections(self, connections: List[Dict[str, Any]]) -> tuple[float, List[str]]:
+        """分析网络连接"""
+        risk_score = 0.0
+        risk_reasons = []
+        
+        for conn in connections:
+            remote_addr = conn.get('remote_address', '')
+            remote_port = conn.get('remote_port', 0)
+            
+            # 检查可疑域名
+            if any(domain in remote_addr for domain in self.suspicious_domains):
+                risk_score = max(risk_score, 0.9)
+                risk_reasons.append(f"连接到可疑域名: {remote_addr}")
+            
+            # 检查可疑端口
+            suspicious_ports = [1234, 4444, 5555, 6666, 31337]
+            if remote_port in suspicious_ports:
+                risk_score = max(risk_score, 0.6)
+                risk_reasons.append(f"使用可疑端口: {remote_port}")
+        
+        return risk_score, risk_reasons
+
+
+class CodeStructureAnalyzer:
+    """代码结构分析器"""
+    
+    def __init__(self):
+        self.suspicious_api_patterns = {
+            'crypto_mining': ['crypto', 'mining', 'hashrate'],
+            'data_theft': ['contacts', 'sms', 'location', 'camera'],
+            'remote_control': ['remote', 'control', 'backdoor'],
+            'rootkit': ['root', 'su', 'system']
+        }
+    
+    def analyze_api_calls(self, api_calls: List[str]) -> tuple[float, List[str]]:
+        """分析API调用模式"""
+        risk_score = 0.0
+        risk_reasons = []
+        
+        api_text = ' '.join(api_calls).lower()
+        
+        for pattern_type, keywords in self.suspicious_api_patterns.items():
+            matches = sum(1 for keyword in keywords if keyword in api_text)
+            if matches >= 2:
+                risk_score = max(risk_score, 0.6 + matches * 0.1)
+                risk_reasons.append(f"检测到{pattern_type}相关API调用")
+        
+        return risk_score, risk_reasons
