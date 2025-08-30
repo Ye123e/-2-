@@ -9,7 +9,7 @@ import subprocess
 import re
 import time
 import threading
-from typing import List, Optional, Dict, Callable
+from typing import List, Optional, Dict, Callable, Any
 from datetime import datetime
 
 from adb_shell.adb_device import AdbDeviceTcp, AdbDeviceUsb
@@ -374,3 +374,236 @@ class DeviceManager(LoggerMixin):
             except Exception as e:
                 self.logger.error(f"设备监控异常: {e}")
                 time.sleep(interval)
+    
+    def validate_device_connection(self, device_id: str) -> Dict[str, bool]:
+        """
+        验证设备连接状态和各项功能
+        
+        Args:
+            device_id: 设备ID
+            
+        Returns:
+            验证结果字典
+        """
+        validation_results = {
+            'adb_connected': False,
+            'authorized': False,
+            'shell_access': False,
+            'storage_accessible': False,
+            'system_readable': False
+        }
+        
+        try:
+            # 检查设备是否在设备列表中
+            if device_id not in self.adb_manager.get_adb_devices():
+                self.logger.warning(f"设备不在ADB设备列表中: {device_id}")
+                return validation_results
+            
+            validation_results['adb_connected'] = True
+            
+            # 检查设备授权状态
+            device = self.adb_manager.connect_device(device_id)
+            if device:
+                validation_results['authorized'] = True
+                
+                # 测试shell访问
+                result = self.adb_manager.execute_command(device_id, 'echo "test"')
+                if result and 'test' in result:
+                    validation_results['shell_access'] = True
+                    
+                    # 测试存储访问
+                    storage_result = self.adb_manager.execute_command(device_id, 'df /data')
+                    if storage_result and '/data' in storage_result:
+                        validation_results['storage_accessible'] = True
+                    
+                    # 测试系统信息读取
+                    system_result = self.adb_manager.execute_command(device_id, 'getprop ro.build.version.release')
+                    if system_result and system_result.strip():
+                        validation_results['system_readable'] = True
+                        
+        except Exception as e:
+            self.logger.error(f"设备验证异常: {device_id}, 错误: {e}")
+            
+        return validation_results
+    
+    def get_device_health_status(self, device_id: str) -> Dict[str, Any]:
+        """
+        获取设备健康状态
+        
+        Args:
+            device_id: 设备ID
+            
+        Returns:
+            设备健康状态信息
+        """
+        health_status = {
+            'overall_status': 'unknown',
+            'connection_quality': 'unknown',
+            'response_time': 0,
+            'battery_level': 0,
+            'temperature': 0,
+            'memory_usage': 0,
+            'storage_usage': 0,
+            'issues': []
+        }
+        
+        try:
+            start_time = time.time()
+            
+            # 测试响应时间
+            result = self.adb_manager.execute_command(device_id, 'echo "ping"')
+            response_time = time.time() - start_time
+            health_status['response_time'] = round(response_time * 1000, 2)  # 毫秒
+            
+            if not result or 'ping' not in result:
+                health_status['issues'].append('设备响应异常')
+                health_status['overall_status'] = 'poor'
+                return health_status
+            
+            # 获取电池信息
+            battery_info = self.adb_manager.execute_command(device_id, 'dumpsys battery | grep level')
+            if battery_info:
+                import re
+                battery_match = re.search(r'level: (\d+)', battery_info)
+                if battery_match:
+                    health_status['battery_level'] = int(battery_match.group(1))
+            
+            # 获取温度信息
+            temp_info = self.adb_manager.execute_command(device_id, 'cat /sys/class/thermal/thermal_zone0/temp')
+            if temp_info and temp_info.strip().isdigit():
+                # 温度通常以毫摄氏度为单位
+                health_status['temperature'] = int(temp_info.strip()) / 1000
+            
+            # 获取内存使用情况
+            mem_info = self.adb_manager.execute_command(device_id, 'cat /proc/meminfo | head -3')
+            if mem_info:
+                lines = mem_info.strip().split('\n')
+                if len(lines) >= 2:
+                    # 解析内存信息
+                    total_match = re.search(r'MemTotal:\s+(\d+)', lines[0])
+                    available_match = re.search(r'MemAvailable:\s+(\d+)', lines[1]) or re.search(r'MemFree:\s+(\d+)', lines[1])
+                    
+                    if total_match and available_match:
+                        total_mem = int(total_match.group(1))
+                        available_mem = int(available_match.group(1))
+                        health_status['memory_usage'] = round((total_mem - available_mem) / total_mem * 100, 1)
+            
+            # 获取存储使用情况
+            storage_info = self._get_storage_info(device_id)
+            if storage_info['total'] > 0:
+                used_storage = storage_info['total'] - storage_info['free']
+                health_status['storage_usage'] = round(used_storage / storage_info['total'] * 100, 1)
+            
+            # 评估连接质量
+            if response_time < 1.0:
+                health_status['connection_quality'] = 'excellent'
+            elif response_time < 2.0:
+                health_status['connection_quality'] = 'good'
+            elif response_time < 5.0:
+                health_status['connection_quality'] = 'fair'
+            else:
+                health_status['connection_quality'] = 'poor'
+                health_status['issues'].append('设备响应缓慢')
+            
+            # 评估整体状态
+            issues_count = len(health_status['issues'])
+            if issues_count == 0 and health_status['connection_quality'] in ['excellent', 'good']:
+                health_status['overall_status'] = 'good'
+            elif issues_count <= 1 and health_status['connection_quality'] in ['good', 'fair']:
+                health_status['overall_status'] = 'fair'
+            else:
+                health_status['overall_status'] = 'poor'
+            
+            # 添加具体的健康检查
+            if health_status['battery_level'] > 0 and health_status['battery_level'] < 20:
+                health_status['issues'].append('电池电量过低')
+            
+            if health_status['temperature'] > 45:
+                health_status['issues'].append('设备温度过高')
+            
+            if health_status['memory_usage'] > 90:
+                health_status['issues'].append('内存使用率过高')
+            
+            if health_status['storage_usage'] > 90:
+                health_status['issues'].append('存储空间不足')
+                
+        except Exception as e:
+            self.logger.error(f"获取设备健康状态失败: {device_id}, 错误: {e}")
+            health_status['issues'].append(f'健康检查失败: {str(e)}')
+            health_status['overall_status'] = 'error'
+            
+        return health_status
+    
+    def test_device_connectivity(self, device_id: str) -> bool:
+        """
+        测试设备连通性
+        
+        Args:
+            device_id: 设备ID
+            
+        Returns:
+            连通性测试结果
+        """
+        try:
+            # 执行简单的echo命令测试
+            result = self.adb_manager.execute_command(device_id, 'echo "connectivity_test"')
+            return result is not None and 'connectivity_test' in result
+        except Exception as e:
+            self.logger.error(f"设备连通性测试失败: {device_id}, 错误: {e}")
+            return False
+    
+    def get_device_capabilities(self, device_id: str) -> Dict[str, bool]:
+        """
+        获取设备能力信息
+        
+        Args:
+            device_id: 设备ID
+            
+        Returns:
+            设备能力字典
+        """
+        capabilities = {
+            'root_access': False,
+            'package_manager': False,
+            'file_system_access': False,
+            'network_access': False,
+            'system_properties': False,
+            'service_control': False
+        }
+        
+        try:
+            # 测试ROOT权限
+            root_result = self.adb_manager.execute_command(device_id, 'id')
+            if root_result and 'uid=0(root)' in root_result:
+                capabilities['root_access'] = True
+            
+            # 测试包管理器
+            pm_result = self.adb_manager.execute_command(device_id, 'pm list packages | head -1')
+            if pm_result and 'package:' in pm_result:
+                capabilities['package_manager'] = True
+            
+            # 测试文件系统访问
+            fs_result = self.adb_manager.execute_command(device_id, 'ls /system')
+            if fs_result and ('bin' in fs_result or 'lib' in fs_result):
+                capabilities['file_system_access'] = True
+            
+            # 测试网络访问
+            network_result = self.adb_manager.execute_command(device_id, 'ping -c 1 8.8.8.8')
+            if network_result and ('1 packets transmitted' in network_result or 'ttl=' in network_result.lower()):
+                capabilities['network_access'] = True
+            
+            # 测试系统属性访问
+            prop_result = self.adb_manager.execute_command(device_id, 'getprop ro.build.version.release')
+            if prop_result and prop_result.strip():
+                capabilities['system_properties'] = True
+            
+            # 测试服务控制（需要root权限）
+            if capabilities['root_access']:
+                service_result = self.adb_manager.execute_command(device_id, 'service list | head -1')
+                if service_result:
+                    capabilities['service_control'] = True
+                    
+        except Exception as e:
+            self.logger.error(f"获取设备能力信息失败: {device_id}, 错误: {e}")
+            
+        return capabilities

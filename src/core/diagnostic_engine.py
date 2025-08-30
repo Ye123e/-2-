@@ -163,6 +163,168 @@ class DiagnosticEngine(LoggerMixin):
         self.logger.info(f"诊断完成，发现 {len(report.issues_found)} 个问题，健康评分: {report.system_health_score}")
         return report
     
+    def diagnose_storage(self, device_id: str) -> List[Issue]:
+        """
+        诊断存储空间问题
+        
+        Args:
+            device_id: 设备ID
+            
+        Returns:
+            发现的存储相关问题列表
+        """
+        device_info = self.device_manager.get_device(device_id)
+        if device_info:
+            return self._diagnose_storage(device_info)
+        return []
+    
+    def diagnose_system_files(self, device_id: str) -> List[Issue]:
+        """
+        诊断系统文件完整性
+        
+        Args:
+            device_id: 设备ID
+            
+        Returns:
+            发现的系统文件相关问题列表
+        """
+        device_info = self.device_manager.get_device(device_id)
+        if device_info:
+            return self._diagnose_system_files(device_info)
+        return []
+    
+    def diagnose_network(self, device_id: str) -> List[Issue]:
+        """
+        诺断网络配置问题
+        
+        Args:
+            device_id: 设备ID
+            
+        Returns:
+            发现的网络相关问题列表
+        """
+        issues = []
+        
+        try:
+            # 检查网络连接状态
+            connectivity_result = self.device_manager.adb_manager.execute_command(
+                device_id, 'ping -c 3 8.8.8.8'
+            )
+            
+            if not connectivity_result or '3 packets transmitted, 0 received' in connectivity_result:
+                issues.append(Issue(
+                    category=IssueCategory.NETWORK,
+                    severity=IssueSeverity.HIGH,
+                    description="无法连接到互联网",
+                    auto_fixable=True
+                ))
+            elif 'packet loss' in connectivity_result and '100%' in connectivity_result:
+                issues.append(Issue(
+                    category=IssueCategory.NETWORK,
+                    severity=IssueSeverity.MEDIUM,
+                    description="网络连接不稳定",
+                    auto_fixable=True
+                ))
+            
+            # 检查WiFi状态
+            wifi_result = self.device_manager.adb_manager.execute_command(
+                device_id, 'dumpsys wifi | grep "Wi-Fi is"'
+            )
+            if wifi_result and 'disabled' in wifi_result.lower():
+                issues.append(Issue(
+                    category=IssueCategory.NETWORK,
+                    severity=IssueSeverity.LOW,
+                    description="WiFi已禁用",
+                    auto_fixable=True
+                ))
+            
+            # 检查DNS配置
+            dns_result = self.device_manager.adb_manager.execute_command(
+                device_id, 'nslookup google.com'
+            )
+            if not dns_result or 'server can\'t find' in dns_result.lower():
+                issues.append(Issue(
+                    category=IssueCategory.NETWORK,
+                    severity=IssueSeverity.MEDIUM,
+                    description="DNS解析异常",
+                    auto_fixable=True
+                ))
+            
+        except Exception as e:
+            self.logger.error(f"网络诊断失败: {e}")
+            issues.append(Issue(
+                category=IssueCategory.NETWORK,
+                severity=IssueSeverity.MEDIUM,
+                description=f"网络论断异常: {str(e)}",
+                auto_fixable=False
+            ))
+            
+        return issues
+    
+    def diagnose_applications(self, device_id: str) -> List[Issue]:
+        """
+        论断应用程序问题
+        
+        Args:
+            device_id: 设备ID
+            
+        Returns:
+            发现的应用相关问题列表
+        """
+        issues = []
+        
+        try:
+            # 获取安装的应用列表
+            packages_result = self.device_manager.adb_manager.execute_command(
+                device_id, 'pm list packages -3'  # 只列出第三方应用
+            )
+            
+            if not packages_result:
+                issues.append(Issue(
+                    category=IssueCategory.APPLICATIONS,
+                    severity=IssueSeverity.MEDIUM,
+                    description="无法获取应用列表",
+                    auto_fixable=False
+                ))
+                return issues
+            
+            packages = [line.replace('package:', '').strip() 
+                       for line in packages_result.strip().split('\n') 
+                       if line.startswith('package:')]
+            
+            # 检查崩溃的应用
+            crashed_apps = self._check_crashed_apps(device_id, packages)
+            if crashed_apps:
+                issues.append(Issue(
+                    category=IssueCategory.APPLICATIONS,
+                    severity=IssueSeverity.MEDIUM,
+                    description=f"发现 {len(crashed_apps)} 个应用程序崩溃",
+                    auto_fixable=True,
+                    details={'crashed_apps': crashed_apps}
+                ))
+            
+            # 检查占用过多资源的应用
+            resource_heavy_apps = self._check_resource_heavy_apps(device_id)
+            if resource_heavy_apps:
+                issues.append(Issue(
+                    category=IssueCategory.APPLICATIONS,
+                    severity=IssueSeverity.MEDIUM,
+                    description=f"发现 {len(resource_heavy_apps)} 个应用占用过多资源",
+                    auto_fixable=True,
+                    details={'resource_heavy_apps': resource_heavy_apps}
+                ))
+                
+        except Exception as e:
+            self.logger.error(f"应用诊断失败: {e}")
+            issues.append(Issue(
+                category=IssueCategory.APPLICATIONS,
+                severity=IssueSeverity.MEDIUM,
+                description=f"应用诺断异常: {str(e)}",
+                auto_fixable=False
+            ))
+            
+        return issues
+    
     def _diagnose_storage(self, device_info: DeviceInfo) -> List[Issue]:
         """诊断存储空间问题"""
         issues = []
@@ -684,3 +846,56 @@ class QuickDiagnostic(LoggerMixin):
             result['system_health'] = 'unknown'
         
         return result
+    
+    def _check_crashed_apps(self, device_id: str, packages: List[str]) -> List[str]:
+        """检查崩溃的应用"""
+        crashed_apps = []
+        
+        try:
+            # 检查系统日志中的崩溃记录
+            crash_result = self.device_manager.adb_manager.execute_command(
+                device_id, 'logcat -d | grep "FATAL EXCEPTION" | tail -10'
+            )
+            
+            if crash_result:
+                for line in crash_result.strip().split('\n'):
+                    for package in packages[:20]:  # 只检查前20个应用
+                        if package in line and package not in crashed_apps:
+                            crashed_apps.append(package)
+                            break
+        
+        except Exception as e:
+            self.logger.error(f"检查崩溃应用失败: {e}")
+        
+        return crashed_apps
+    
+    def _check_resource_heavy_apps(self, device_id: str) -> List[Dict[str, Any]]:
+        """检查资源占用过多的应用"""
+        heavy_apps = []
+        
+        try:
+            # 获取内存使用情况
+            mem_result = self.device_manager.adb_manager.execute_command(
+                device_id, 'dumpsys meminfo | grep "Total PSS" | head -10'
+            )
+            
+            if mem_result:
+                for line in mem_result.strip().split('\n'):
+                    if 'Total PSS' in line:
+                        parts = line.strip().split()
+                        if len(parts) >= 3:
+                            try:
+                                pss_kb = int(parts[2].replace(',', ''))
+                                if pss_kb > 100000:  # 超过100MB
+                                    app_name = parts[0] if len(parts) > 0 else 'Unknown'
+                                    heavy_apps.append({
+                                        'app_name': app_name,
+                                        'memory_mb': pss_kb / 1024
+                                    })
+                            except ValueError:
+                                continue
+        
+        except Exception as e:
+            self.logger.error(f"检查资源占用失败: {e}")
+        
+        return heavy_apps

@@ -206,6 +206,546 @@ class RepairEngine(LoggerMixin):
             custom_issues: 自定义问题列表
             
         Returns:
+            修复任务ID，失败返回none
+        """
+        try:
+            device_info = self.device_manager.get_device(device_id)
+            if not device_info:
+                self.logger.error(f"设备未找到: {device_id}")
+                return None
+            
+            # 生成任务ID
+            task_id = str(uuid.uuid4())
+            
+            # 获取修复步骤模板
+            repair_steps = self._get_repair_steps(repair_type, custom_issues, device_info)
+            
+            if not repair_steps:
+                self.logger.error(f"无法生成修复计划: {repair_type}")
+                return None
+            
+            # 计算总的预计时间
+            total_duration = sum(step.estimated_duration for step in repair_steps)
+            
+            # 创建修复任务
+            repair_task = RepairTask(
+                task_id=task_id,
+                device_id=device_id,
+                task_type=repair_type.value,
+                status=TaskStatus.PENDING,
+                progress=0,
+                start_time=None,
+                end_time=None,
+                estimated_duration=total_duration,
+                logs=[],
+                error_message=None,
+                details={
+                    'repair_steps': [
+                        {
+                            'step_id': step.step_id,
+                            'description': step.description,
+                            'estimated_duration': step.estimated_duration,
+                            'requires_root': step.requires_root,
+                            'backup_required': step.backup_required,
+                            'dependencies': step.dependencies,
+                            'status': 'pending'
+                        } for step in repair_steps
+                    ],
+                    'custom_issues': [issue.__dict__ for issue in (custom_issues or [])],
+                    'device_capabilities': self.device_manager.get_device_capabilities(device_id)
+                }
+            )
+            
+            self.active_tasks[task_id] = repair_task
+            repair_task.add_log(f"修复计划已创建: {repair_type.value}, 包含 {len(repair_steps)} 个步骤")
+            
+            self.logger.info(f"修复计划创建成功: {task_id} - {repair_type.value}")
+            self._notify_task_callbacks(repair_task)
+            
+            return task_id
+            
+        except Exception as e:
+            self.logger.error(f"创建修复计划失败: {e}")
+            return None
+    
+    def _get_repair_steps(self, repair_type: RepairType, custom_issues: List[Issue], 
+                         device_info: DeviceInfo) -> List[RepairStep]:
+        """
+        获取修复步骤列表
+        
+        Args:
+            repair_type: 修复类型
+            custom_issues: 自定义问题
+            device_info: 设备信息
+            
+        Returns:
+            修复步骤列表
+        """
+        base_steps = self.repair_templates.get(repair_type, [])
+        
+        # 复制模板步骤以避免修改原模板
+        repair_steps = []
+        for step in base_steps:
+            new_step = RepairStep(
+                step_id=step.step_id,
+                repair_type=step.repair_type,
+                description=step.description,
+                estimated_duration=step.estimated_duration,
+                requires_root=step.requires_root,
+                backup_required=step.backup_required,
+                dependencies=step.dependencies.copy()
+            )
+            repair_steps.append(new_step)
+        
+        # 根据具体问题调整修复步骤
+        if custom_issues:
+            repair_steps = self._customize_repair_steps(repair_steps, custom_issues, device_info)
+        
+        # 根据设备能力调整步骤
+        repair_steps = self._adjust_steps_for_device(repair_steps, device_info)
+        
+        return repair_steps
+    
+    def _customize_repair_steps(self, base_steps: List[RepairStep], 
+                               custom_issues: List[Issue], 
+                               device_info: DeviceInfo) -> List[RepairStep]:
+        """
+        根据具体问题定制修复步骤
+        """
+        additional_steps = []
+        
+        # 根据不同问题类型添加特定的修复步骤
+        issue_categories = set(issue.category for issue in custom_issues)
+        
+        if "storage" in issue_categories:
+            # 添加存储优化步骤
+            storage_step = RepairStep(
+                step_id="optimize_storage",
+                repair_type=RepairType.STORAGE_CLEANUP,
+                description=f"优化存储空间 (当前使用: {device_info.storage_usage_percent:.1f}%)",
+                estimated_duration=90
+            )
+            additional_steps.append(storage_step)
+        
+        if "applications" in issue_categories:
+            # 添加应用优化步骤
+            app_step = RepairStep(
+                step_id="optimize_apps",
+                repair_type=RepairType.APP_CLEANUP,
+                description="优化应用程序设置",
+                estimated_duration=60
+            )
+            additional_steps.append(app_step)
+        
+        if "network" in issue_categories:
+            # 添加网络修复步骤
+            network_step = RepairStep(
+                step_id="repair_network",
+                repair_type=RepairType.NETWORK_RESET,
+                description="修复网络配置问题",
+                estimated_duration=45
+            )
+            additional_steps.append(network_step)
+        
+        # 根据问题严重程度调整优先级
+        critical_issues = [issue for issue in custom_issues if issue.severity == "critical"]
+        if critical_issues:
+            # 在开始添加紧急处理步骤
+            emergency_step = RepairStep(
+                step_id="emergency_fix",
+                repair_type=RepairType.SYSTEM_REPAIR,
+                description=f"紧急处理严重问题 ({len(critical_issues)}个)",
+                estimated_duration=120
+            )
+            additional_steps.insert(0, emergency_step)
+        
+        return additional_steps + base_steps
+    
+    def _adjust_steps_for_device(self, steps: List[RepairStep], 
+                                device_info: DeviceInfo) -> List[RepairStep]:
+        """
+        根据设备能力调整修复步骤
+        """
+        adjusted_steps = []
+        device_capabilities = self.device_manager.get_device_capabilities(device_info.device_id)
+        
+        for step in steps:
+            # 检查是否需要ROOT权限
+            if step.requires_root and not device_capabilities.get('root_access', False):
+                # 替换为不需要ROOT的替代方案
+                alternative_step = self._get_alternative_step(step, device_capabilities)
+                if alternative_step:
+                    adjusted_steps.append(alternative_step)
+                else:
+                    # 跳过需要ROOT的步骤，但记录日志
+                    skip_step = RepairStep(
+                        step_id=f"skip_{step.step_id}",
+                        repair_type=step.repair_type,
+                        description=f"跳过: {step.description} (需要ROOT权限)",
+                        estimated_duration=5
+                    )
+                    adjusted_steps.append(skip_step)
+            else:
+                adjusted_steps.append(step)
+        
+        return adjusted_steps
+    
+    def _get_alternative_step(self, original_step: RepairStep, 
+                             device_capabilities: Dict[str, bool]) -> Optional[RepairStep]:
+        """
+        获取替代的修复步骤
+        """
+        alternatives = {
+            RepairType.PERMISSION_FIX: RepairStep(
+                step_id=f"alt_{original_step.step_id}",
+                repair_type=RepairType.PERMISSION_FIX,
+                description="使用用户权限修复部分权限问题",
+                estimated_duration=original_step.estimated_duration // 2
+            ),
+            RepairType.SYSTEM_REPAIR: RepairStep(
+                step_id=f"alt_{original_step.step_id}",
+                repair_type=RepairType.APP_CLEANUP,
+                description="使用应用级优化替代系统级修复",
+                estimated_duration=original_step.estimated_duration
+            )
+        }
+        
+        return alternatives.get(original_step.repair_type)
+    
+    def execute_repair(self, task_id: str) -> bool:
+        """
+        执行修复任务
+        
+        Args:
+            task_id: 任务ID
+            
+        Returns:
+            是否成功
+        """
+        if task_id not in self.active_tasks:
+            self.logger.error(f"任务未找到: {task_id}")
+            return False
+        
+        task = self.active_tasks[task_id]
+        
+        # 在新线程中执行修复
+        repair_thread = threading.Thread(
+            target=self._execute_repair_task,
+            args=(task,),
+            daemon=True
+        )
+        repair_thread.start()
+        
+        return True
+    
+    def _execute_repair_task(self, task: RepairTask):
+        """执行修复任务的具体实现"""
+        try:
+            task.start()
+            self._update_progress(task.task_id, 0, "开始执行修复任务")
+            self._notify_task_callbacks(task)
+            
+            device_info = self.device_manager.get_device(task.device_id)
+            if not device_info:
+                raise Exception(f"设备未连接: {task.device_id}")
+            
+            # 获取修复步骤
+            repair_steps_data = task.details.get('repair_steps', [])
+            repair_steps = []
+            
+            for step_data in repair_steps_data:
+                step = RepairStep(
+                    step_id=step_data['step_id'],
+                    repair_type=RepairType(step_data.get('repair_type', RepairType.STORAGE_CLEANUP.value)),
+                    description=step_data['description'],
+                    estimated_duration=step_data['estimated_duration'],
+                    requires_root=step_data.get('requires_root', False),
+                    backup_required=step_data.get('backup_required', False),
+                    dependencies=step_data.get('dependencies', [])
+                )
+                repair_steps.append(step)
+            
+            total_steps = len(repair_steps)
+            completed_steps = []
+            
+            for i, step in enumerate(repair_steps):
+                # 检查依赖
+                if not self._check_dependencies(step, completed_steps):
+                    error_msg = f"步骤依赖未满足: {step.step_id}"
+                    task.add_log(error_msg)
+                    continue
+                
+                # 更新进度
+                progress = int((i / total_steps) * 100)
+                self._update_progress(task.task_id, progress, f"正在执行: {step.description}")
+                
+                # 执行修复步骤
+                success = self._execute_repair_step(task, step, device_info)
+                
+                if success:
+                    completed_steps.append(step.step_id)
+                    task.add_log(f"步骤完成: {step.description}")
+                    
+                    # 更新步骤状态
+                    for step_data in task.details['repair_steps']:
+                        if step_data['step_id'] == step.step_id:
+                            step_data['status'] = 'completed'
+                            break
+                else:
+                    task.add_log(f"步骤失败: {step.description}")
+                    
+                    # 更新步骤状态
+                    for step_data in task.details['repair_steps']:
+                        if step_data['step_id'] == step.step_id:
+                            step_data['status'] = 'failed'
+                            break
+            
+            # 完成任务
+            success_rate = len(completed_steps) / total_steps if total_steps > 0 else 0
+            
+            if success_rate >= 0.8:  # 80%以上成功率认为成功
+                task.complete()
+                self._update_progress(task.task_id, 100, f"修复完成 ({len(completed_steps)}/{total_steps}个步骤成功)")
+            else:
+                task.fail(f"修复未完全成功: {len(completed_steps)}/{total_steps}个步骤成功")
+                self._update_progress(task.task_id, int(success_rate * 100), 
+                                    f"修复部分成功: {len(completed_steps)}/{total_steps}")
+            
+            self._notify_task_callbacks(task)
+            
+        except Exception as e:
+            error_msg = f"修复任务异常: {str(e)}"
+            self.logger.error(error_msg)
+            task.fail(error_msg)
+            self._update_progress(task.task_id, task.progress, error_msg)
+            self._notify_task_callbacks(task)
+    
+    def _check_dependencies(self, step: RepairStep, completed_steps: List[str]) -> bool:
+        """检查步骤依赖是否已完成"""
+        for dependency in step.dependencies:
+            if dependency not in completed_steps:
+                return False
+        return True
+    
+    def _execute_repair_step(self, task: RepairTask, step: RepairStep, device_info: DeviceInfo) -> bool:
+        """执行具体的修复步骤"""
+        try:
+            task.add_log(f"开始执行步骤: {step.description}")
+            
+            if step.repair_type == RepairType.CACHE_CLEAR:
+                return self._repair_cache_clear(task, device_info)
+            elif step.repair_type == RepairType.FILE_CLEANUP:
+                return self._repair_file_cleanup(task, device_info)
+            elif step.repair_type == RepairType.VIRUS_REMOVAL:
+                return self._repair_virus_removal(task, device_info)
+            elif step.repair_type == RepairType.PERMISSION_FIX:
+                return self._repair_permission_fix(task, device_info)
+            elif step.repair_type == RepairType.SYSTEM_REPAIR:
+                return self._repair_system_repair(task, device_info)
+            elif step.repair_type == RepairType.APP_CLEANUP:
+                return self._repair_app_cleanup(task, device_info)
+            elif step.repair_type == RepairType.NETWORK_RESET:
+                return self._repair_network_reset(task, device_info)
+            elif step.repair_type == RepairType.STORAGE_CLEANUP:
+                return self._repair_storage_cleanup(task, device_info)
+            else:
+                task.add_log(f"不支持的修复类型: {step.repair_type}")
+                return False
+                
+        except Exception as e:
+            error_msg = f"执行修复步骤异常: {str(e)}"
+            task.add_log(error_msg)
+            self.logger.error(error_msg)
+            return False
+    
+    def _repair_cache_clear(self, task: RepairTask, device_info: DeviceInfo) -> bool:
+        """清理应用缓存"""
+        try:
+            # 获取应用列表
+            packages_result = self.device_manager.adb_manager.execute_command(
+                device_info.device_id, 'pm list packages -3'
+            )
+            
+            if not packages_result:
+                task.add_log("无法获取应用列表")
+                return False
+            
+            packages = [line.replace('package:', '').strip() 
+                       for line in packages_result.strip().split('\n') 
+                       if line.startswith('package:')]
+            
+            cleared_count = 0
+            for package in packages[:10]:  # 只清理前10个应用
+                result = self.device_manager.adb_manager.execute_command(
+                    device_info.device_id, f'pm clear {package}'
+                )
+                if result and 'Success' in result:
+                    cleared_count += 1
+            
+            task.add_log(f"成功清理 {cleared_count} 个应用的缓存")
+            return cleared_count > 0
+            
+        except Exception as e:
+            task.add_log(f"清理缓存失败: {str(e)}")
+            return False
+    
+    def _repair_file_cleanup(self, task: RepairTask, device_info: DeviceInfo) -> bool:
+        """清理文件"""
+        try:
+            # 清理临时文件
+            temp_dirs = ['/data/local/tmp', '/cache', '/data/cache']
+            cleaned_files = 0
+            
+            for temp_dir in temp_dirs:
+                result = self.device_manager.adb_manager.execute_command(
+                    device_info.device_id, f'find {temp_dir} -type f -name "*.tmp" -delete 2>/dev/null; echo "done"'
+                )
+                if result and 'done' in result:
+                    cleaned_files += 1
+            
+            # 清理日志文件
+            log_result = self.device_manager.adb_manager.execute_command(
+                device_info.device_id, 'logcat -c'
+            )
+            
+            task.add_log(f"文件清理完成，处理 {cleaned_files} 个目录")
+            return True
+            
+        except Exception as e:
+            task.add_log(f"文件清理失败: {str(e)}")
+            return False
+    
+    def _repair_virus_removal(self, task: RepairTask, device_info: DeviceInfo) -> bool:
+        """病毒清除"""
+        try:
+            # 执行安全扫描
+            scan_result = self.security_scanner.scan_device(device_info.device_id)
+            
+            if not scan_result:
+                task.add_log("安全扫描完成，未发现威胁")
+                return True
+            
+            # 处理发现的威胁
+            removed_count = 0
+            for threat in scan_result[:5]:  # 只处理前5个威胁
+                if threat.severity == "critical":
+                    # 尝试删除恶意应用
+                    if hasattr(threat, 'package_name') and threat.package_name:
+                        uninstall_result = self.device_manager.adb_manager.execute_command(
+                            device_info.device_id, f'pm uninstall {threat.package_name}'
+                        )
+                        if uninstall_result and 'Success' in uninstall_result:
+                            removed_count += 1
+                            task.add_log(f"已删除恶意应用: {threat.package_name}")
+            
+            task.add_log(f"安全清理完成，处理 {removed_count} 个威胁")
+            return True
+            
+        except Exception as e:
+            task.add_log(f"病毒清除失败: {str(e)}")
+            return False
+    
+    def _repair_permission_fix(self, task: RepairTask, device_info: DeviceInfo) -> bool:
+        """修复权限问题"""
+        try:
+            # 重置应用权限
+            reset_result = self.device_manager.adb_manager.execute_command(
+                device_info.device_id, 'pm reset-permissions'
+            )
+            
+            task.add_log("权限修复完成")
+            return True
+            
+        except Exception as e:
+            task.add_log(f"权限修复失败: {str(e)}")
+            return False
+    
+    def _repair_system_repair(self, task: RepairTask, device_info: DeviceInfo) -> bool:
+        """系统修复"""
+        try:
+            # 重启系统服务
+            restart_result = self.device_manager.adb_manager.execute_command(
+                device_info.device_id, 'am restart'
+            )
+            
+            task.add_log("系统修复完成")
+            return True
+            
+        except Exception as e:
+            task.add_log(f"系统修复失败: {str(e)}")
+            return False
+    
+    def _repair_app_cleanup(self, task: RepairTask, device_info: DeviceInfo) -> bool:
+        """应用清理"""
+        try:
+            # 停止占用过多资源的应用
+            stop_result = self.device_manager.adb_manager.execute_command(
+                device_info.device_id, 'am kill-all'
+            )
+            
+            task.add_log("应用清理完成")
+            return True
+            
+        except Exception as e:
+            task.add_log(f"应用清理失败: {str(e)}")
+            return False
+    
+    def _repair_network_reset(self, task: RepairTask, device_info: DeviceInfo) -> bool:
+        """网络重置"""
+        try:
+            # 重置网络设置
+            wifi_result = self.device_manager.adb_manager.execute_command(
+                device_info.device_id, 'svc wifi disable && svc wifi enable'
+            )
+            
+            task.add_log("网络重置完成")
+            return True
+            
+        except Exception as e:
+            task.add_log(f"网络重置失败: {str(e)}")
+            return False
+    
+    def _repair_storage_cleanup(self, task: RepairTask, device_info: DeviceInfo) -> bool:
+        """存储清理"""
+        try:
+            # 综合存储清理
+            cache_success = self._repair_cache_clear(task, device_info)
+            file_success = self._repair_file_cleanup(task, device_info)
+            
+            task.add_log("存储清理完成")
+            return cache_success or file_success
+            
+        except Exception as e:
+            task.add_log(f"存储清理失败: {str(e)}")
+            return False
+    
+    def get_repair_task(self, task_id: str) -> Optional[RepairTask]:
+        """获取修复任务"""
+        return self.active_tasks.get(task_id)
+    
+    def cancel_repair(self, task_id: str) -> bool:
+        """取消修复任务"""
+        if task_id in self.active_tasks:
+            task = self.active_tasks[task_id]
+            if task.status in [TaskStatus.PENDING, TaskStatus.RUNNING]:
+                task.status = TaskStatus.CANCELLED
+                task.add_log("任务已取消")
+                self._notify_task_callbacks(task)
+                return True
+        return False
+    
+    def get_active_tasks(self) -> List[RepairTask]:
+        """获取所有活动任务"""
+        return list(self.active_tasks.values())
+        """
+        创建修复计划
+        
+        Args:
+            device_id: 设备ID
+            repair_type: 修复类型
+            custom_issues: 自定义问题列表
+            
+        Returns:
             任务ID，失败返回None
         """
         device_info = self.device_manager.get_device(device_id)

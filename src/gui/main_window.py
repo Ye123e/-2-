@@ -18,6 +18,7 @@ from ..core.diagnostic_engine import DiagnosticEngine
 from ..core.security_scanner import SecurityScanner, VirusSignatureDatabase
 from ..core.file_manager import FileScanner, FileCleaner
 from ..core.repair_engine import RepairEngine, RepairType
+from ..core.repair_manager import RepairManager, RepairStage
 from ..models import DeviceInfo, RepairTask
 from ..utils.logger import LoggerMixin
 
@@ -53,14 +54,19 @@ class MainWindow(LoggerMixin):
         # 初始化修复引擎
         self.repair_engine = RepairEngine(self.device_manager)
         
+        # 初始化修复管理器
+        self.repair_manager = RepairManager(self.device_manager)
+        
         self.current_device: Optional[DeviceInfo] = None
         self.current_diagnostic_report = None
         self.current_virus_report = None
         self.active_repair_tasks = {}
+        self.current_repair_session = None
         
         self._setup_window()
         self._create_widgets()
         self._setup_device_callbacks()
+        self._setup_repair_callbacks()
         
         # 启动设备监控
         if config.auto_connect:
@@ -190,14 +196,61 @@ class MainWindow(LoggerMixin):
         repair_frame = ttk.Frame(self.notebook)
         self.notebook.add(repair_frame, text="修复操作")
         
-        # 修复选项区域
-        options_frame = ttk.LabelFrame(repair_frame, text="修复选项")
-        options_frame.pack(fill=tk.X, padx=5, pady=5)
+        # 设备修复区域
+        device_repair_frame = ttk.LabelFrame(repair_frame, text="设备修复")
+        device_repair_frame.pack(fill=tk.X, padx=5, pady=5)
         
-        ttk.Button(options_frame, text="一键修复", command=self._auto_repair).pack(side=tk.LEFT, padx=5, pady=5)
-        ttk.Button(options_frame, text="清理缓存", command=self._clear_cache).pack(side=tk.LEFT, padx=5, pady=5)
-        ttk.Button(options_frame, text="修复权限", command=self._fix_permissions).pack(side=tk.LEFT, padx=5, pady=5)
-        ttk.Button(options_frame, text="病毒清除", command=self._remove_virus).pack(side=tk.LEFT, padx=5, pady=5)
+        # 修复选项按钮
+        repair_buttons_frame = ttk.Frame(device_repair_frame)
+        repair_buttons_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        ttk.Button(repair_buttons_frame, text="一键修复", command=self._start_device_repair, 
+                  style="Accent.TButton").pack(side=tk.LEFT, padx=5, pady=5)
+        ttk.Button(repair_buttons_frame, text="快速清理", command=self._quick_cleanup).pack(side=tk.LEFT, padx=5, pady=5)
+        ttk.Button(repair_buttons_frame, text="安全扫描", command=self._security_scan).pack(side=tk.LEFT, padx=5, pady=5)
+        ttk.Button(repair_buttons_frame, text="停止修复", command=self._cancel_repair, state=tk.DISABLED).pack(side=tk.LEFT, padx=5, pady=5)
+        
+        # 修复选项配置
+        options_config_frame = ttk.Frame(device_repair_frame)
+        options_config_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        self.repair_full = tk.BooleanVar(value=False)
+        self.repair_backup = tk.BooleanVar(value=True)
+        self.repair_verify = tk.BooleanVar(value=True)
+        
+        ttk.Checkbutton(options_config_frame, text="全面修复模式", variable=self.repair_full).pack(side=tk.LEFT, padx=5)
+        ttk.Checkbutton(options_config_frame, text="备份重要数据", variable=self.repair_backup).pack(side=tk.LEFT, padx=5)
+        ttk.Checkbutton(options_config_frame, text="验证修复结果", variable=self.repair_verify).pack(side=tk.LEFT, padx=5)
+        
+        # 修复进度区域
+        progress_frame = ttk.LabelFrame(repair_frame, text="修复进度")
+        progress_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        # 当前阶段显示
+        self.current_stage_label = ttk.Label(progress_frame, text="就绪", font=("Arial", 10))
+        self.current_stage_label.pack(anchor=tk.W, padx=5, pady=2)
+        
+        # 进度条
+        self.progress_bar = ttk.Progressbar(progress_frame, mode='determinate', length=400)
+        self.progress_bar.pack(fill=tk.X, padx=5, pady=5)
+        
+        # 进度百分比显示
+        self.progress_label = ttk.Label(progress_frame, text="0%")
+        self.progress_label.pack(anchor=tk.E, padx=5, pady=2)
+        
+        # 修复日志区域
+        repair_log_frame = ttk.LabelFrame(repair_frame, text="修复日志")
+        repair_log_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        self.repair_log_text = scrolledtext.ScrolledText(repair_log_frame, state=tk.DISABLED, height=12)
+        self.repair_log_text.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        
+        # 修复结果区域
+        result_frame = ttk.LabelFrame(repair_frame, text="修复结果")
+        result_frame.pack(fill=tk.X, padx=5, pady=5)
+        
+        self.repair_result_label = ttk.Label(result_frame, text="等待开始修复...", font=("Arial", 10))
+        self.repair_result_label.pack(padx=5, pady=5)
         
         # 修复进度区域
         progress_frame = ttk.LabelFrame(repair_frame, text="修复进度")
@@ -603,6 +656,238 @@ ROOT状态: {'已获取' if self.current_device.root_status else '未获取'}
         self.root.quit()
         self.root.destroy()
     
+    def _setup_repair_callbacks(self) -> None:
+        """设置修复管理器的回调函数"""
+        self.repair_manager.add_progress_callback(self._on_repair_progress)
+        self.repair_manager.add_completion_callback(self._on_repair_completion)
+    
+    def _start_device_repair(self) -> None:
+        """启动设备修复流程"""
+        if not self.current_device:
+            messagebox.showwarning("警告", "请先选择一个设备")
+            return
+        
+        if self.current_repair_session:
+            messagebox.showinfo("信息", "修复正在进行中，请稍后")
+            return
+        
+        # 确认对话框
+        result = messagebox.askyesno(
+            "确认修复",
+            f"即将对设备 {self.current_device.model} 进行系统修复。\n\n"
+            f"修复选项：\n"
+            f"- 全面修复：{'是' if self.repair_full.get() else '否'}\n"
+            f"- 数据备份：{'是' if self.repair_backup.get() else '否'}\n"
+            f"- 结果验证：{'是' if self.repair_verify.get() else '否'}\n\n"
+            f"是否继续？"
+        )
+        
+        if not result:
+            return
+        
+        # 准备修复选项
+        repair_options = {
+            'full_repair': self.repair_full.get(),
+            'backup_data': self.repair_backup.get(),
+            'verify_results': self.repair_verify.get()
+        }
+        
+        # 更新界面状态
+        self._set_repair_ui_state(True)
+        
+        # 清空日志
+        self.repair_log_text.config(state=tk.NORMAL)
+        self.repair_log_text.delete(1.0, tk.END)
+        self.repair_log_text.config(state=tk.DISABLED)
+        
+        # 在新线程中启动修复
+        threading.Thread(
+            target=self._execute_device_repair,
+            args=(repair_options,),
+            daemon=True
+        ).start()
+    
+    def _execute_device_repair(self, repair_options: dict) -> None:
+        """在后台线程中执行设备修复"""
+        try:
+            # 启动修复流程
+            session_id = self.repair_manager.start_repair(
+                self.current_device.device_id,
+                repair_options
+            )
+            
+            if session_id:
+                self.current_repair_session = session_id
+                self._add_repair_log(f"修复会话已启动: {session_id}")
+            else:
+                self._add_repair_log("启动修复失败")
+                self.root.after(0, lambda: self._set_repair_ui_state(False))
+                
+        except Exception as e:
+            self.logger.error(f"执行设备修复异常: {e}")
+            self._add_repair_log(f"修复异常: {str(e)}")
+            self.root.after(0, lambda: self._set_repair_ui_state(False))
+    
+    def _quick_cleanup(self) -> None:
+        """快速清理"""
+        if not self.current_device:
+            messagebox.showwarning("警告", "请先选择一个设备")
+            return
+        
+        # 启动快速清理
+        repair_options = {'quick_mode': True}
+        
+        self._set_repair_ui_state(True)
+        
+        threading.Thread(
+            target=lambda: self._execute_specific_repair(RepairType.STORAGE_CLEANUP, repair_options),
+            daemon=True
+        ).start()
+    
+    def _security_scan(self) -> None:
+        """安全扫描"""
+        if not self.current_device:
+            messagebox.showwarning("警告", "请先选择一个设备")
+            return
+        
+        self._set_repair_ui_state(True)
+        
+        threading.Thread(
+            target=self._execute_security_scan,
+            daemon=True
+        ).start()
+    
+    def _execute_specific_repair(self, repair_type: RepairType, options: dict) -> None:
+        """执行特定类型的修复"""
+        try:
+            # 创建修复任务
+            task_id = self.repair_engine.create_repair_plan(
+                self.current_device.device_id,
+                repair_type
+            )
+            
+            if task_id:
+                success = self.repair_engine.execute_repair(task_id)
+                
+                if success:
+                    self._add_repair_log(f"{repair_type.value} 修复已启动")
+                else:
+                    self._add_repair_log(f"{repair_type.value} 修复启动失败")
+            else:
+                self._add_repair_log(f"无法创建 {repair_type.value} 修复任务")
+                
+        except Exception as e:
+            self._add_repair_log(f"{repair_type.value} 修复异常: {str(e)}")
+        finally:
+            self.root.after(0, lambda: self._set_repair_ui_state(False))
+    
+    def _execute_security_scan(self) -> None:
+        """执行安全扫描"""
+        try:
+            self._add_repair_log("开始安全扫描...")
+            
+            issues = self.security_scanner.scan_device(self.current_device.device_id)
+            
+            if issues:
+                self._add_repair_log(f"安全扫描完成，发现 {len(issues)} 个安全问题")
+                for issue in issues[:5]:  # 只显示前5个问题
+                    self._add_repair_log(f"- {issue.description}")
+            else:
+                self._add_repair_log("安全扫描完成，未发现安全问题")
+                
+        except Exception as e:
+            self._add_repair_log(f"安全扫描异常: {str(e)}")
+        finally:
+            self.root.after(0, lambda: self._set_repair_ui_state(False))
+    
+    def _cancel_repair(self) -> None:
+        """取消修复"""
+        if self.current_repair_session:
+            success = self.repair_manager.cancel_repair(self.current_repair_session)
+            if success:
+                self._add_repair_log("修复已取消")
+                self.current_repair_session = None
+                self._set_repair_ui_state(False)
+            else:
+                self._add_repair_log("取消修复失败")
+    
+    def _on_repair_progress(self, session_id: str, stage, progress: int, message: str) -> None:
+        """修复进度回调"""
+        if session_id == self.current_repair_session:
+            # 在主线程中更新UI
+            self.root.after(0, lambda: self._update_repair_progress(stage, progress, message))
+    
+    def _on_repair_completion(self, session_id: str, success: bool, session) -> None:
+        """修复完成回调"""
+        if session_id == self.current_repair_session:
+            self.root.after(0, lambda: self._handle_repair_completion(success, session))
+    
+    def _update_repair_progress(self, stage, progress: int, message: str) -> None:
+        """更新修复进度显示"""
+        # 更新阶段显示
+        stage_text = f"当前阶段: {stage.value}" if hasattr(stage, 'value') else f"当前阶段: {stage}"
+        self.current_stage_label.config(text=stage_text)
+        
+        # 更新进度条
+        self.progress_bar['value'] = progress
+        
+        # 更新进度百分比
+        self.progress_label.config(text=f"{progress}%")
+        
+        # 添加日志
+        self._add_repair_log(f"[{progress}%] {message}")
+    
+    def _handle_repair_completion(self, success: bool, session) -> None:
+        """处理修复完成"""
+        self.current_repair_session = None
+        self._set_repair_ui_state(False)
+        
+        if success:
+            health_score = getattr(session, 'health_score', 0)
+            self.repair_result_label.config(text=f"修复成功完成! 健康评分: {health_score}")
+            self._add_repair_log("修复成功完成!")
+            messagebox.showinfo("修复完成", "设备修复成功完成!")
+        else:
+            error_msg = getattr(session, 'error_message', '未知错误')
+            self.repair_result_label.config(text=f"修复失败: {error_msg}")
+            self._add_repair_log(f"修复失败: {error_msg}")
+            messagebox.showerror("修复失败", f"设备修复失败: {error_msg}")
+    
+    def _set_repair_ui_state(self, repairing: bool) -> None:
+        """设置修复界面状态"""
+        # 这里需要根据实际的按钮引用来设置状态
+        # 由于widget引用较复杂，简化处理
+        if repairing:
+            # 重置进度
+            self.progress_bar['value'] = 0
+            self.progress_label.config(text="0%")
+            self.current_stage_label.config(text="准备开始修复...")
+            self.repair_result_label.config(text="修复进行中...")
+        # 更多状态设置可以在这里添加
+    
+    def _add_repair_log(self, message: str) -> None:
+        """添加修复日志"""
+        from datetime import datetime
+        
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        log_message = f"[{timestamp}] {message}\n"
+        
+        def update_log():
+            self.repair_log_text.config(state=tk.NORMAL)
+            self.repair_log_text.insert(tk.END, log_message)
+            self.repair_log_text.see(tk.END)
+            self.repair_log_text.config(state=tk.DISABLED)
+        
+        # 如果在主线程中，直接更新；否则使用after方法
+        try:
+            if threading.current_thread() == threading.main_thread():
+                update_log()
+            else:
+                self.root.after(0, update_log)
+        except:
+            # 如果窗口已关闭，忽略错误
+            pass
+
     def run(self) -> None:
         """运行主界面"""
         self.logger.info("启动主界面")
